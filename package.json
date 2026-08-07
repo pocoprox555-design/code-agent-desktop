@@ -1,0 +1,56 @@
+{
+  "name": "r-code-agent",
+  "version": "0.5.0",
+  "private": true,
+  "author": "Rahma Code Agent",
+  "description": "وكيل برمجة وجهاز محلي لنظام Windows",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build",
+    "preview": "electron-vite preview",
+    "package:win": "npm run check && electron-builder --win portable --config.directories.output=release-0.5.0"
+  },
+  "build": {
+    "appId": "local.r-code-agent.desktop",
+    "productName": "Rahma Code Agent",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": "portable",
+      "artifactName": "Rahma-Code-Agent-${version}-portable.${ext}"
+    }
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "gpt-tokenizer": "^3.4.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0"
+  }
+}

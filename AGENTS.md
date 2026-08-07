@@ -1,0 +1,29 @@
+# AGENTS.md — دليل الوكيل داخل هذا المشروع
+
+هذا المشروع هو التطبيق الذي يعمل به الوكيل نفسه: **Rahma Code Agent** (Electron + React + TypeScript). عند العمل عليه التزم بهذه البنية والقواعد.
+
+## البنية
+- `src/main/` — عملية الوكيل الرئيسية:
+  - `index.ts` — تسجيل IPC والتحقق من المصدر والمسارات.
+  - `agent.ts` — حلقة الوكيل (حتى 30 جولة / 30 دقيقة)، بناء السياق والضغط.
+  - `tools.ts` — الأدوات الفعلية (قراءة/بحث/كتابة/طرفية/ويب).
+  - `provider.ts` — طلبات مزود OpenCode Go (Chat/Responses/Anthropic).
+  - `provider-store.ts` — تخزين مفتاح API مشفرًا عبر DPAPI.
+  - `database.ts` — SQLite محلي للجلسات والرسائل والسجل.
+- `src/preload/index.ts` — جسر contextBridge الآمن للواجهة.
+- `src/renderer/` — واجهة React عربية (`App.tsx` + `styles.css`).
+- `src/shared/` — أنواع مشتركة ونماذج `GO_MODELS`.
+- `tests/` — اختبارات `node:test` تعمل عبر `npm test`.
+
+## أوامر التحقق
+- `npm run typecheck` — فحص TypeScript.
+- `npm test` — اختبارات قاعدة البيانات والأدوات.
+- `npm run check` — typecheck + tests + build كامل.
+- `npm run package:win` — بناء نسخة Windows محمولة.
+
+## قواعد إلزامية عند العمل هنا
+- مجلدات `release-*` و`dist*` و`out` و`node_modules` و`win-unpacked*` و`*.tmp` **مستثناة من البحث والقراءة العشوائية**: لا تفتحها ولا تبحث داخلها؛ فهي نسخ بناء ضخمة (أكثر من 10 GB) وليست مصدرًا.
+- عند قراءة ملفات المصدر: اجمع القراءات المستقلة في `read_files` واحدة ولا تقسّم الملف يدويًا.
+- عند تعديل أي ملف مصدر: عدّل ثم شغّل `npm run check` كاملًا للتأكد.
+- `tools.ts` هو مصدر الأدوات نفسها: `walkFiles` يستثني مجلدات البناء تلقائيًا، و`edit_file` يرفض التعديل الغامض متعدد التطابقات.
+- لا تعدّل `AGENTS.md` هذا إلا عند تغيّر حقيقي في البنية؛ الوكيل يقرؤه تلقائيًا في سياقه.
