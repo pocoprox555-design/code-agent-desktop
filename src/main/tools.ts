@@ -31,6 +31,7 @@ export const toolDefinitions: ToolDefinition[] = [
   tool('search_files', 'ابحث نصيًا داخل ملف محدد أو ملفات مجلد، وأعد file:line:column.', { path: str('ملف محدد أو مجلد بداية، الافتراضي الجذر'), pattern: str('نص أو regex'), include: str('glob اختياري مثل *.ts عند البحث في مجلد'), fixed_strings: bool('اعتبر النمط نصًا حرفيًا'), case_sensitive: bool('بحث حساس لحالة الأحرف'), limit: integer('أقصى عدد نتائج', 1, MAX_SEARCH_RESULTS) }, ['pattern']),
   tool('search_symbols', 'ابحث عن رموز برمجية (دوال، أصناف، واجهات، متغيرات عامة) في المشروع وأعدها مع أرقام الأسطر. مفيد لتتبع التعريفات في المشاريع الكبيرة دون قراءة كل ملف.', { path: str('مجلد البداية، الافتراضي الجذر'), query: str('اسم الرمز أو جزء منه (غير حساس لحالة الأحرف)'), limit: integer('أقصى عدد نتائج', 1, MAX_SEARCH_RESULTS) }, ['query']),
   tool('write_file', 'أنشئ ملفًا أو استبدل محتواه بالكامل.', { path: str('مسار الملف'), content: str('المحتوى الكامل') }, ['path', 'content']),
+  tool('edit_file', 'عدّل جزءًا محددًا من ملف نصي باستبدال تطابق وحيد آمن. اقرأ الملف أولًا واستخدم نصًا قديمًا محددًا بما يكفي.', { path: str('مسار الملف'), old_string: str('النص الحالي المطلوب استبداله'), new_string: str('النص الجديد') }, ['path', 'old_string', 'new_string']),
   tool('create_directory', 'أنشئ مجلدًا.', { path: str('مسار المجلد') }, ['path']),
   tool('get_file_info', 'أعد معلومات ملف أو مجلد مع عدد الأسطر.', { path: str('المسار') }, ['path']),
   tool('web_fetch', 'اجلب صفحة HTTPS عامة. يمنع localhost ويتطلب موافقة.', { url: str('رابط HTTPS'), max_bytes: integer('حد المحتوى', 1000, 500000) }, ['url']),
@@ -936,7 +937,7 @@ async function requestPublicHttps(url: URL, maxBytes: number, signal: AbortSigna
     let timeout: NodeJS.Timeout
     const cleanup = (): void => { clearTimeout(timeout); signal.removeEventListener('abort', abort) }
     const fail = (error: Error): void => { if (settled) return; settled = true; cleanup(); reject(error) }
-    const request = httpsRequest(url, { method: 'GET', headers: { 'user-agent': 'Rahma-Code-Agent/1.0' }, servername: url.hostname, lookup: (_hostname, _options, callback) => callback(null, selected.address, selected.family as 4 | 6) }, (response) => {
+    const request = httpsRequest({ host: selected.address, hostname: url.hostname, port: 443, path: url.pathname + url.search, method: 'GET', headers: { 'user-agent': 'Rahma-Code-Agent/1.0' }, servername: url.hostname }, (response) => {
       const status = response.statusCode ?? 0
       const contentType = String(response.headers['content-type'] ?? '')
       if (status >= 300 && status < 400) { const headers = response.headers as Record<string, string | string[] | undefined>; response.resume(); fail(Object.assign(new Error('REDIRECT'), { redirectStatus: status, headers })); return }

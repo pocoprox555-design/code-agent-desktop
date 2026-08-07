@@ -27,7 +27,7 @@ export function App() {
   const [answeringApproval, setAnsweringApproval] = useState<string | null>(null)
   const [appError, setAppError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760)
-  const [planOpen, setPlanOpen] = useState(true)
+  const [planOpen, setPlanOpen] = useState(false)
   const [planExpanded, setPlanExpanded] = useState(false)
   const planUserClosed = useRef(false)
   const prevAllDone = useRef(false)
@@ -54,10 +54,10 @@ export function App() {
   useEffect(() => window.rCode.events.onAgent(onEvent), [])
   useEffect(() => window.rCode.events.onApproval((request) => setApprovals((items) => items.some((item) => item.id === request.id) ? items : [...items, request])), [])
   useEffect(() => { if (followRef.current) endRef.current?.scrollIntoView({ block: 'end' }); else setShowLatest(true) }, [view.messages, view.status])
-  useEffect(() => { if (view.todos.length > 0 && !planUserClosed.current) setPlanOpen(true) }, [view.todos.length > 0])
+  useEffect(() => { if (view.todos.length > 0 && view.phase !== 'idle' && !planUserClosed.current) setPlanOpen(true) }, [view.todos.length, view.phase])
   useEffect(() => {
     const allDone = view.todos.length > 0 && view.todos.every((todo) => todo.status === 'completed')
-    if (allDone && !prevAllDone.current) setPlanOpen(false)
+    if (allDone && !prevAllDone.current) { setPlanOpen(false); setPlanExpanded(false) }
     prevAllDone.current = allDone
   }, [view.todos])
   useEffect(() => { if (!sidebarOpen) return; const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape' && window.matchMedia('(max-width: 760px)').matches) setSidebarOpen(false) }; document.addEventListener('keydown', onKeyDown); return () => document.removeEventListener('keydown', onKeyDown) }, [sidebarOpen])
@@ -96,7 +96,7 @@ export function App() {
   }
 
   async function select(session: Session) {
-    setActiveId(session.id); followRef.current = true; setShowLatest(false)
+    setActiveId(session.id); followRef.current = true; setShowLatest(false); setPlanOpen(false); setPlanExpanded(false); planUserClosed.current = false; prevAllDone.current = false
     if (window.matchMedia('(max-width: 760px)').matches) setSidebarOpen(false)
     try { const [loaded, usage, subagents, tree, persistedRun] = await Promise.all([window.rCode.sessions.messages(session.id), window.rCode.sessions.usage(session.id), window.rCode.sessions.subagents(session.id), window.rCode.files.list(session.id), window.rCode.sessions.run(session.id)]); setTreeEntries(tree); setRunState(persistedRun); updateView(session.id, (current) => ({ ...current, messages: mergeMessages(loaded, current.messages), usage, todos: session.todos, subagents })) }
     catch (error) { updateView(session.id, (current) => ({ ...current, error: errorText(error) })) }
@@ -196,16 +196,6 @@ export function App() {
     catch (error) { setAppError(errorText(error)) }
   }
 
-  async function toggleTodo(todo: Todo) {
-    if (!active) return
-    const status = todo.status === 'completed' ? 'pending' : 'completed'
-    try {
-      const todos = await window.rCode.sessions.setTodos(active.id, view.todos.map((item) => item.id === todo.id ? { content: item.content, status, priority: item.priority } : { content: item.content, status: item.status, priority: item.priority }))
-      updateView(active.id, (current) => ({ ...current, todos }))
-      setSessions((items) => items.map((item) => item.id === active.id ? { ...item, todos } : item))
-    } catch (error) { setAppError(errorText(error)) }
-  }
-
   async function approvePlan() {
     if (!active) return
     try {
@@ -271,9 +261,9 @@ export function App() {
         <button className="plan-float-close" aria-label="إغلاق خطة العمل بالكامل" onClick={() => { setPlanOpen(false); planUserClosed.current = true }}><X size={12}/></button>
       </div>
       <div className="plan-float-progress-track"><div className="plan-float-progress-bar" style={{ width: `${Math.round(todoProgress.done / todoProgress.total * 100)}%` }}/></div>
-         {planExpanded && <>
+          {planExpanded && <>
            {todoProgress.current && <div className="plan-float-current" title={todoProgress.current}><LoaderCircle size={11} className="spin"/><span>{todoProgress.current}</span></div>}
-           <div className="plan-float-list"><TodoList todos={view.todos} toggle={toggleTodo}/></div>
+            <div className="plan-float-list"><TodoList todos={view.todos}/></div>
            {active?.agentMode === 'plan' && !active.planApproved && <button className="plan-approve-btn" onClick={() => void approvePlan()}>اعتماد الخطة والانتقال إلى Build</button>}
          </>}
     </div>}
@@ -388,10 +378,10 @@ function MessageBubbleWithActions({ message, streaming, onEdit, onRegenerate }: 
   return <div className="message-with-actions"><MessageBubble message={message} streaming={false}/><div className="message-actions">{message.role === 'user' ? <button onClick={() => onEdit(message)}>تعديل الرسالة</button> : message.role === 'assistant' && message.content ? <button onClick={() => void onRegenerate(message)}>إعادة توليد</button> : null}</div></div>
 }
 
-function TodoList({ todos, toggle }: { todos: Todo[]; toggle?: (todo: Todo) => void }) {
+function TodoList({ todos }: { todos: Todo[] }) {
   return <div className="todo-body">{todos.map((todo, index) => <div key={todo.id} className={`todo-item ${todo.status}`}>
     <span className="todo-index">{index + 1}</span>
-    <button className={`todo-status ${todo.status}`} aria-label={todo.status === 'completed' ? 'إعادة فتح المهمة' : 'إكمال المهمة'} onClick={() => toggle?.(todo)}>{todo.status === 'completed' ? <Check size={11}/> : todo.status === 'in_progress' ? <LoaderCircle className="spin" size={12}/> : <Square size={11}/>}</button>
+    <span className={`todo-status ${todo.status}`} aria-label={todo.status === 'completed' ? 'مكتملة' : todo.status === 'in_progress' ? 'قيد التنفيذ' : 'لم تبدأ'}>{todo.status === 'completed' ? <Check size={11}/> : todo.status === 'in_progress' ? <LoaderCircle className="spin" size={12}/> : <Square size={11}/>}</span>
     <span className="todo-content">{todo.content}</span>
     <span className={`todo-priority ${todo.priority}`}>{todo.priority}</span>
   </div>)}</div>
@@ -431,7 +421,7 @@ function SubagentRow({ item }: { item: SubagentEvent }) {
 
 function ExecutionStage({ messages }: { messages: Message[] }) { const [open, setOpen] = useState(false); const tools = messages.flatMap((message) => message.toolCalls ?? []); const running = tools.some((tool) => tool.status === 'running'); const failed = tools.some((tool) => tool.status === 'error' || tool.status === 'denied'); const completed = tools.filter((tool) => tool.status === 'completed').length; const names = [...new Set(tools.map((tool) => tool.name.replaceAll('_', ' ')))]; const progress = tools.length ? Math.round((completed / tools.length) * 100) : 0; return <section className={`execution-step ${running ? 'running' : failed ? 'failed' : 'completed'}`}><button className="execution-head" onClick={() => setOpen(!open)} aria-expanded={open}><span className="execution-mark">{running ? <LoaderCircle className="spin" size={16}/> : failed ? <XCircle size={16}/> : <CheckCircle2 size={16}/>}</span><span><strong>{running ? 'قيد التنفيذ الآن' : failed ? 'تحتاج مراجعة' : 'اكتملت بنجاح'}</strong><small><span className="exec-counter">{tools.length.toLocaleString('ar')} عملية</span><span>{names.join(' · ')}</span></small></span><ChevronDown className={open ? 'rot' : ''} size={14}/></button>{running && <div className="execution-progress"><div className="execution-progress-bar" style={{ width: `${progress}%` }}/></div>}{open && <div className="execution-body">{messages.map((message) => <div className="execution-round" key={message.id}>{message.content && <p>{message.content}</p>}<div className="tool-list">{message.toolCalls?.map((tool) => <ToolCard key={tool.id} tool={tool}/>)}</div></div>)}</div>}</section> }
 function CodeBlock({ language, code }: { language: string; code: string }) { const [copied, setCopied] = useState(false); async function copy() { try { await window.rCode.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch {} } return <div className="code-block" dir="ltr"><div className="code-head"><span><span className="code-lang-dot"/>{language}</span><button aria-label="نسخ الكود" onClick={() => void copy()}>{copied ? <Check size={12}/> : <Copy size={12}/>} {copied ? 'تم النسخ' : 'نسخ'}</button></div><pre><code>{code}</code></pre></div> }
- function ToolCard({ tool }: { tool: NonNullable<Message['toolCalls']>[number] }) { const [open, setOpen] = useState(false); const target = String(tool.input.path ?? tool.input.command ?? ''); const statusLabel: Record<string, string> = { running: 'قيد التشغيل', completed: 'مكتملة', error: 'فشلت', denied: 'مرفوضة' }; return <div className={`tool-card ${tool.status}`}><button className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}><span className="tool-icon">{tool.status === 'running' ? <LoaderCircle className="spin" size={14}/> : tool.status === 'completed' ? <CheckCircle2 size={14}/> : <XCircle size={14}/>}</span><span className="tool-info"><b>{tool.name.replaceAll('_', ' ')}</b><div className="tool-meta-row">{target && <small dir="ltr">{target}</small>}{tool.step !== undefined && <span className="tool-step">خطوة {tool.step.toLocaleString('ar')}</span>}<span className="tool-tag">{statusLabel[tool.status] ?? tool.status}</span></div></span><ChevronDown className={open ? 'rot' : ''} size={13}/></button>{open && <div className="tool-body"><strong>المدخلات</strong><pre>{JSON.stringify(tool.input, null, 2)}</pre>{tool.output !== undefined && <><strong>النتيجة</strong>{tool.name === 'run_powershell' ? <AnsiOutput value={tool.output}/> : <DiffOrText name={tool.name} value={tool.output}/>}</>}</div>}</div> }
+  function ToolCard({ tool }: { tool: NonNullable<Message['toolCalls']>[number] }) { const [open, setOpen] = useState(false); const target = String(tool.input.path ?? tool.input.command ?? ''); const statusLabel: Record<string, string> = { running: 'قيد التنفيذ', completed: 'تم', error: 'فشل', denied: 'مرفوض' }; return <div className={`tool-card ${tool.status}`}><button className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}><span className="tool-icon">{tool.status === 'running' ? <LoaderCircle className="spin" size={14}/> : tool.status === 'completed' ? <CheckCircle2 size={14}/> : <XCircle size={14}/>}</span><span className="tool-info"><b>{tool.name.replaceAll('_', ' ')}</b><div className="tool-meta-row">{target && <small dir="ltr">{target}</small>}<span className="tool-tag">{statusLabel[tool.status] ?? tool.status}</span></div></span><ChevronDown className={open ? 'rot' : ''} size={13}/></button>{open && <div className="tool-body"><strong>المدخلات</strong><pre>{JSON.stringify(tool.input, null, 2)}</pre>{tool.output !== undefined && <><strong>النتيجة</strong>{tool.name === 'run_powershell' ? <AnsiOutput value={tool.output}/> : <DiffOrText name={tool.name} value={tool.output}/>}</>}</div>}</div> }
 
 function DiffOrText({ name, value }: { name: string; value: string }) {
   if (!['patch_file', 'write_file', 'edit_file', 'append_file', 'delete_file'].includes(name)) return <pre>{value}</pre>

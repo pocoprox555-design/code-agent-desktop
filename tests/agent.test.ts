@@ -42,3 +42,21 @@ test('accepts and persists multiple queued messages exactly once', async (t) => 
   await runner.shutdown()
   db.close()
 })
+
+test('marks unfinished build-plan items complete when the agent finishes successfully', async (t) => {
+  const db = new AppDatabase(await databasePath(t))
+  const session = db.createSession(process.cwd())
+  db.setTodos(session.id, [
+    { content: 'فحص المشروع', status: 'in_progress', priority: 'high' },
+    { content: 'إرسال الملخص', status: 'pending', priority: 'medium' },
+  ])
+  const config: ProviderConfig = { name: 'test', baseUrl: 'https://example.test/', apiPath: 'chat/completions', apiStyle: 'chat', model: 'gpt-5.6-luna', contextWindow: 128_000, maxOutputTokens: 2_048, apiKey: 'test-key' }
+  const provider = { get: () => config } as unknown as ProviderStore
+  const runner = new AgentRunner(db, provider, () => null, async () => ({ text: 'اكتملت المهمة', toolCalls: [], finishReason: 'stop', usage: { input: 10, output: 4 } }))
+
+  await runner.send(session.id, 'نفذ المهمة')
+  for (let attempt = 0; attempt < 100 && runner.states().length; attempt++) await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(db.getTodos(session.id).map((todo) => todo.status), ['completed', 'completed'])
+  await runner.shutdown()
+  db.close()
+})

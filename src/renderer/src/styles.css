@@ -1808,9 +1808,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .todo-head small { display: block; font-weight: 400; color: var(--muted, #94a3b8); font-size: 11px; margin-top: 2px; }
 .todo-mark { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: rgba(56,189,248,0.12); color: #38bdf8; }
 .todo-body { padding: 4px 14px 12px; display: flex; flex-direction: column; gap: 6px; max-height: min(240px, 24vh); overflow-y: auto; }
-.todo-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: rgba(148,163,184,0.06); font-size: 12px; }
+.todo-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; background: rgba(148,163,184,0.06); font-size: 12px; transition: background .18s ease, opacity .18s ease; }
 .todo-item.completed .todo-content { text-decoration: line-through; opacity: 0.55; }
-.todo-status { border: 0; cursor: pointer; background: transparent; color: inherit; padding: 0; }
+.todo-status { border: 0; background: transparent; color: inherit; padding: 0; }
 .todo-status { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
 .todo-status.completed { color: #34d399; }
 .todo-status.in_progress { color: #fbbf24; }
@@ -1853,7 +1853,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 100%);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
   z-index: 8;
   overflow: hidden;
   animation: plan-float-in .18s ease-out;
@@ -2023,6 +2023,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   margin-inline-start: 2px;
 }
 .plan-toggle-btn.on .plan-toggle-progress { background: rgba(56, 189, 248, 0.22); }
+.plan-toggle-btn:not(.on) { color: var(--text-3); background: transparent; }
 
 .reasoning-block { margin: 6px 0 8px; border: 1px solid rgba(148,163,184,0.12); border-radius: 10px; background: rgba(148,163,184,0.04); overflow: hidden; }
 .reasoning-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 10px; background: transparent; border: none; color: var(--muted, #94a3b8); font-size: 11px; cursor: pointer; text-align: right; }

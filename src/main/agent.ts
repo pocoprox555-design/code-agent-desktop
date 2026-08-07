@@ -163,6 +163,13 @@ export class AgentRunner {
           this.emit({ sessionId, runId: run.runId, type: 'message', message })
           this.recordStepTiming(sessionId, step + 1, { discoveryMs: step === 0 ? discoveryMs : 0, contextMs, modelMs: Date.now() - modelStartedAt, firstTokenMs: firstDeltaAt ? firstDeltaAt - modelStartedAt : undefined, toolMs: 0, totalMs: Date.now() - stepStartedAt, tools: [] })
            if (run.pendingMessages.length || run.followUpQueued) { run.followUpQueued = false; this.setStatus(sessionId, 'وصلت رسائل متابعة، يواصل الوكيل مع السياق المحدّث...', run); continue }
+           if (session.agentMode === 'build') {
+             const todos = this.db.getTodos(sessionId)
+             if (todos.some((todo) => todo.status === 'pending' || todo.status === 'in_progress')) {
+               const completedTodos = this.db.setTodos(sessionId, todos.map((todo) => ({ content: todo.content, status: todo.status === 'cancelled' ? 'cancelled' : 'completed', priority: todo.priority })))
+               this.emit({ sessionId, runId: run.runId, type: 'todo', todos: completedTodos })
+             }
+           }
            run.outcome = 'completed'
            return
         }

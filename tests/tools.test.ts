@@ -186,6 +186,13 @@ test('edit_file refuses ambiguous matches with multiple occurrences', async (t) 
   await assert.rejects(() => executeTool('edit_file', { path: 'dup.txt', old_string: 'value', new_string: 'changed' }, context(root)), /أكثر تحديدًا/)
 })
 
+test('edit_file is exposed to the model with the implementation schema', () => {
+  const definition = toolDefinitions.find((item) => item.function.name === 'edit_file')
+  assert.ok(definition)
+  assert.deepEqual(definition.function.parameters.required, ['path', 'old_string', 'new_string'])
+  assert.equal(definition.function.parameters.additionalProperties, false)
+})
+
 test('edit_file maps CRLF match boundaries without corrupting adjacent code', async (t) => {
   const root = await fixture(t)
   const file = join(root, 'crlf.java')

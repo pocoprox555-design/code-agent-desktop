@@ -114,7 +114,8 @@ async function requestOnce(config: ProviderConfig, messages: ModelInput[], tools
     else headers.authorization = `Bearer ${config.apiKey}`
   }
   const maxOutput = options.maxOutputTokens ?? config.maxOutputTokens
-  const body = apiStyle === 'chat' ? toChatBody(config, messages, tools, maxOutput) : apiStyle === 'responses' ? toResponsesBody(config, messages, tools, maxOutput) : toAnthropicBody(config, messages, tools, maxOutput)
+  const buildBody = (withReasoningControl: boolean): Record<string, unknown> => apiStyle === 'chat' ? toChatBody(config, messages, tools, maxOutput, withReasoningControl) : apiStyle === 'responses' ? toResponsesBody(config, messages, tools, maxOutput, withReasoningControl) : toAnthropicBody(config, messages, tools, maxOutput, withReasoningControl)
+  let body = buildBody(true)
   if (options.onTextDelta) { body.stream = true; if (apiStyle === 'chat') body.stream_options = { include_usage: true } }
   const controller = new AbortController()
   let timedOut = false
@@ -124,9 +125,19 @@ async function requestOnce(config: ProviderConfig, messages: ModelInput[], tools
   const abort = (): void => controller.abort()
   options.signal?.addEventListener('abort', abort, { once: true })
   try {
-     const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+     let response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
       const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES
-      if (!response.ok) { const raw = await readBoundedBody(response, Math.min(maxResponseBytes, 1_000_000)); if (isContextOverflow(response.status, raw)) throw new ContextOverflowError(`تجاوز الطلب نافذة سياق المزود: ${raw.slice(0, 1000)}`); throw new ProviderHttpError(response.status, parseRetryAfter(response.headers.get('retry-after-ms'), response.headers.get('retry-after')), `فشل المزود (${response.status}): ${raw.slice(0, 1000)}`) }
+      if (!response.ok) {
+        const raw = await readBoundedBody(response, Math.min(maxResponseBytes, 1_000_000))
+        if (isContextOverflow(response.status, raw)) throw new ContextOverflowError(`تجاوز الطلب نافذة سياق المزود: ${raw.slice(0, 1000)}`)
+        if (reasoningControlRejected(response.status, raw)) {
+          body = buildBody(false)
+          if (options.onTextDelta) { body.stream = true; if (apiStyle === 'chat') body.stream_options = { include_usage: true } }
+          const retry = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+          if (retry.ok) response = retry
+          else throw new ProviderHttpError(retry.status, parseRetryAfter(retry.headers.get('retry-after-ms'), retry.headers.get('retry-after')), `فشل المزود (${retry.status}): ${raw.slice(0, 1000)}`)
+        } else throw new ProviderHttpError(response.status, parseRetryAfter(response.headers.get('retry-after-ms'), response.headers.get('retry-after')), `فشل المزود (${response.status}): ${raw.slice(0, 1000)}`)
+      }
       options.onResponseStarted?.()
       if (options.onTextDelta) return parseEventStream(response, apiStyle, options.onTextDelta, maxResponseBytes, options.onReasoningDelta)
      const raw = await readBoundedBody(response, maxResponseBytes)
@@ -141,6 +152,12 @@ async function requestOnce(config: ProviderConfig, messages: ModelInput[], tools
     if (timedOut) throw new ProviderTimeoutError('انتهت مهلة اتصال المزود')
     throw error
   } finally { clearTimeout(timeout); options.signal?.removeEventListener('abort', abort) }
+}
+
+function reasoningControlRejected(status: number, raw: string): boolean {
+  if (status !== 400 && status !== 422) return false
+  const value = raw.toLowerCase()
+  return /(?:unknown|unrecognized|unsupported|not supported|extra fields|additional.*(?:not|unexpected)|invalid.*(?:parameter|field|argument)|unexpected.*(?:parameter|field|argument)|not permitted|parameter.*not allowed|"thinking".*not|"reasoning_effort".*not|does not support thinking|thinking.*(?:unsupported|not supported))/i.test(value)
 }
 
 async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
@@ -244,8 +261,8 @@ function finishStream(style: 'chat' | 'responses' | 'anthropic', state: StreamSt
   return reply
 }
 
-function toChatBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number): Record<string, unknown> {
-  return { model: config.model, messages: normalizeChatMessages(messages), ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0, max_tokens: maxOutput }
+function toChatBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number, withReasoningControl = true): Record<string, unknown> {
+  return { model: config.model, messages: normalizeChatMessages(messages), ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0, max_tokens: maxOutput, ...(withReasoningControl ? { reasoning_effort: 'low' } : {}) }
 }
 
 function normalizeChatMessages(messages: ModelInput[]): Array<Record<string, unknown>> {
@@ -298,7 +315,7 @@ function parseChat(data: Record<string, any>): ModelReply {
   return { text: textContent(message.content), reasoning, toolCalls, finishReason: toolCalls.length ? 'tool_calls' : mapChatReason(choice.finish_reason), usage: usage(data.usage, 'prompt_tokens', 'completion_tokens') }
 }
 
-function toResponsesBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number): Record<string, unknown> {
+function toResponsesBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number, withReasoningControl = true): Record<string, unknown> {
   const input: unknown[] = []
   for (const message of messages) {
     if (message.role === 'tool') input.push({ type: 'function_call_output', call_id: message.tool_call_id, output: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) })
@@ -311,7 +328,7 @@ function toResponsesBody(config: ProviderConfig, messages: ModelInput[], tools: 
       for (const call of message.tool_calls ?? []) input.push({ type: 'function_call', call_id: call.id, name: call.function.name, arguments: call.function.arguments })
     }
   }
-  return { model: config.model, input, ...(tools.length ? { tools: tools.map((item) => ({ type: 'function', name: item.function.name, description: item.function.description, parameters: item.function.parameters })) } : {}), max_output_tokens: maxOutput, store: false }
+  return { model: config.model, input, ...(tools.length ? { tools: tools.map((item) => ({ type: 'function', name: item.function.name, description: item.function.description, parameters: item.function.parameters })) } : {}), max_output_tokens: maxOutput, store: false, ...(withReasoningControl ? { reasoning: { effort: 'low' } } : {}) }
 }
 
 function parseResponses(data: Record<string, any>): ModelReply {
@@ -329,7 +346,7 @@ function parseResponses(data: Record<string, any>): ModelReply {
   return { text, reasoning, toolCalls, finishReason, providerPayload: output, usage: usage(data.usage, 'input_tokens', 'output_tokens') }
 }
 
-function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number): Record<string, unknown> {
+function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number, withReasoningControl = true): Record<string, unknown> {
   const systemMessages = messages.filter((message) => message.role === 'system')
   const systemBlocks = systemMessages.map((message) => ({ type: 'text', text: typeof message.content === 'string' ? message.content : message.content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('') } as Record<string, unknown>))
   if (systemBlocks.length) systemBlocks.at(-1)!.cache_control = { type: 'ephemeral' }
@@ -367,7 +384,7 @@ function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: 
   const lastMessage = merged.at(-1)
   const lastBlock = lastMessage?.content.at(-1)
   if (lastBlock && typeof lastBlock === 'object') (lastBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' }
-  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(toolDefs.length ? { tools: toolDefs } : {}), max_tokens: maxOutput, temperature: 0 }
+  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(toolDefs.length ? { tools: toolDefs } : {}), max_tokens: maxOutput, temperature: 0, ...(withReasoningControl ? { thinking: { type: 'enabled', budget_tokens: 2048 } } : {}) }
 }
 
 function parseAnthropic(data: Record<string, any>): ModelReply {
