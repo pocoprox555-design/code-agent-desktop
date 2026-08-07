@@ -49,6 +49,8 @@ export const toolDefinitions: ToolDefinition[] = [
   tool('git_fetch', 'اجلب تحديثات الفروع البعيدة دون دمجها.', { path: str('مجلد المستودع، الافتراضي الجذر'), remote: str('اسم remote اختياري') }, []),
   tool('git_pull', 'اجلب وادمج تحديثات الفرع الحالي من remote.', { path: str('مجلد المستودع، الافتراضي الجذر'), remote: str('اسم remote اختياري'), branch: str('اسم الفرع اختياري') }, []),
   tool('git_push', 'ادفع commits الفرع الحالي إلى remote.', { path: str('مجلد المستودع، الافتراضي الجذر'), remote: str('اسم remote اختياري'), branch: str('اسم الفرع اختياري') }, []),
+  tool('git_checkpoint', 'أنشئ نقطة رجوع محلية باسم فرع آمن عند HEAD الحالي.', { path: str('مجلد المستودع، الافتراضي الجذر'), name: str('اسم checkpoint اختياري') }, []),
+  tool('git_isolate_branch', 'أنشئ فرع عمل معزولًا للمهمة الحالية وانتقل إليه.', { path: str('مجلد المستودع، الافتراضي الجذر'), name: str('اسم الفرع') }, ['name']),
   tool('git_restore', 'استعد ملفًا من HEAD (يُلغي تغييراته غير الملتزمة نهائيًا). يتطلب موافقة صريحة دائمًا.', { path: str('مجلد المستودع، الافتراضي الجذر'), file: str('مسار الملف بالنسبة لمسار المستودع') }, ['file']),
   tool('git_checkout', 'بدّل إلى فرع موجود في الريبو.', { path: str('مجلد المستودع، الافتراضي الجذر'), branch: str('اسم الفرع') }, ['branch']),
   tool('git_reset', 'ألغِ الترحيل إلى HEAD (mixed) أو حرّك HEAD دون لمس الملفات (soft). يرفض --hard نهائيًا.', { path: str('مجلد المستودع، الافتراضي الجذر'), mode: str('soft أو mixed، الافتراضي mixed') }, []),
@@ -88,7 +90,7 @@ export interface ToolContext {
 
 export async function executeTool(name: string, input: Record<string, unknown>, context: ToolContext): Promise<string> {
   if (context.deadlineAt !== undefined && Date.now() >= context.deadlineAt) return failure('DEADLINE_EXCEEDED', 'انتهى الوقت المتاح للجولة الحالية.')
-  const mutating = ['write_file', 'edit_file', 'patch_file', 'create_directory', 'run_powershell', 'git_commit', 'git_revert', 'git_revert_step', 'git_add', 'git_fetch', 'git_pull', 'git_push', 'delete_file', 'move_file', 'append_file', 'git_restore', 'git_checkout', 'git_reset'].includes(name)
+  const mutating = ['write_file', 'edit_file', 'patch_file', 'create_directory', 'run_powershell', 'git_commit', 'git_revert', 'git_revert_step', 'git_add', 'git_fetch', 'git_pull', 'git_push', 'git_checkpoint', 'git_isolate_branch', 'delete_file', 'move_file', 'append_file', 'git_restore', 'git_checkout', 'git_reset'].includes(name)
   if (context.session.agentMode === 'plan' && mutating) return failure('PLAN_MODE', 'وضع Plan لا يسمح بالتعديل أو تنفيذ الأوامر.')
   const destructive = ['delete_file', 'git_restore', 'git_checkout', 'git_reset', 'git_revert', 'git_revert_step'].includes(name)
 
@@ -205,6 +207,8 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
     case 'git_fetch': return gitFetch(target.absolute, optionalString(input.remote), context.signal, context.trackProcess, context.deadlineAt)
     case 'git_pull': return gitPull(target.absolute, optionalString(input.remote), optionalString(input.branch), context.signal, context.trackProcess, context.deadlineAt)
     case 'git_push': return gitPush(target.absolute, optionalString(input.remote), optionalString(input.branch), context.signal, context.trackProcess, context.deadlineAt)
+    case 'git_checkpoint': return gitCheckpoint(target.absolute, optionalString(input.name), context.signal, context.trackProcess, context.deadlineAt)
+    case 'git_isolate_branch': return gitIsolateBranch(target.absolute, requiredString(input.name, 'name'), context.signal, context.trackProcess, context.deadlineAt)
     case 'git_restore': return gitRestore(target.absolute, requiredString(input.file, 'file'), context.signal, context.trackProcess, context.deadlineAt)
     case 'git_checkout': return gitCheckout(target.absolute, requiredString(input.branch, 'branch'), context.signal, context.trackProcess, context.deadlineAt)
     case 'git_reset': return gitReset(target.absolute, String(input.mode ?? 'mixed'), context.signal, context.trackProcess, context.deadlineAt)
@@ -1070,6 +1074,22 @@ async function gitPull(cwd: string, remote: string | undefined, branch: string |
 
 async function gitPush(cwd: string, remote: string | undefined, branch: string | undefined, signal: AbortSignal, trackProcess?: (child: import('child_process').ChildProcess) => void, deadlineAt?: number): Promise<string> {
   return success({ output: await runGit(['push', ...(remote ? [remote] : []), ...(branch ? [branch] : [])], cwd, signal, trackProcess, deadlineAt) })
+}
+
+async function gitCheckpoint(cwd: string, requested: string | undefined, signal: AbortSignal, trackProcess?: (child: import('child_process').ChildProcess) => void, deadlineAt?: number): Promise<string> {
+  const name = sanitizeGitRef(requested || `rahma/checkpoint-${new Date().toISOString().replace(/[:.]/g, '-')}`)
+  return success({ branch: name, output: await runGit(['branch', name], cwd, signal, trackProcess, deadlineAt) })
+}
+
+async function gitIsolateBranch(cwd: string, requested: string, signal: AbortSignal, trackProcess?: (child: import('child_process').ChildProcess) => void, deadlineAt?: number): Promise<string> {
+  const name = sanitizeGitRef(requested)
+  return success({ branch: name, output: await runGit(['switch', '-c', name], cwd, signal, trackProcess, deadlineAt) })
+}
+
+function sanitizeGitRef(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9._/-]/g, '-').replace(/^[-/.]+|[-/.]+$/g, '')
+  if (!normalized || normalized.startsWith('-') || normalized.includes('..')) throw new Error('اسم فرع Git غير صالح')
+  return normalized.slice(0, 180)
 }
 
 async function gitRestore(cwd: string, file: string, signal: AbortSignal, trackProcess?: (child: import('child_process').ChildProcess) => void, deadlineAt?: number): Promise<string> {

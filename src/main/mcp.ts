@@ -178,7 +178,15 @@ class RemoteMcpConnection implements McpConnectionLike {
   async listTools(signal: AbortSignal): Promise<McpToolRecord[]> { const result = await this.request('tools/list', {}, signal); return Array.isArray(result?.tools) ? result.tools as McpToolRecord[] : [] }
 
   async callTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<string> {
-    const result = await this.request('tools/call', { name, arguments: input }, signal)
+    let result: any
+    try { result = await this.request('tools/call', { name, arguments: input }, signal) }
+    catch (error) {
+      if (signal.aborted) throw error
+      this.alive = false
+      this.sessionId = ''
+      await this.start(signal)
+      result = await this.request('tools/call', { name, arguments: input }, signal)
+    }
     const content = Array.isArray(result?.content) ? result.content.map((part: any) => part?.type === 'text' ? String(part.text ?? '') : JSON.stringify(part)).join('\n') : result?.structuredContent ? JSON.stringify(result.structuredContent) : ''
     return JSON.stringify({ ok: !result?.isError, data: { content: content.slice(0, 500_000), isError: Boolean(result?.isError) } }, null, 2)
   }
@@ -204,16 +212,9 @@ class RemoteMcpConnection implements McpConnectionLike {
         const sessionId = response.headers.get('mcp-session-id')
         if (sessionId) this.sessionId = sessionId
        const contentType = String(response.headers.get('content-type') ?? '')
+       if (/text\/event-stream/i.test(contentType)) return readSseResult(response, payload.id, 5_000_000)
        const text = await readBoundedResponse(response, 5_000_000)
-      if (/\bjson\b/i.test(contentType)) { const parsed = JSON.parse(text); if (parsed?.error) throw new Error(parsed.error.message ?? 'خطأ MCP غير معروف'); return parsed?.result ?? parsed }
-      if (/text\/event-stream/i.test(contentType)) {
-        for (const block of text.split(/\r?\n\r?\n/)) {
-          const data = block.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
-          if (!data || data === '[DONE]') continue
-          try { const parsed = JSON.parse(data); if (parsed?.error) throw new Error(parsed.error.message ?? 'خطأ MCP غير معروف'); if (parsed?.id === payload.id) return parsed.result ?? parsed } catch { continue }
-        }
-        throw new Error('لم يستجب خادم MCP عن بُعد بحل متطابق')
-      }
+       if (/\bjson\b/i.test(contentType)) { const parsed = JSON.parse(text); if (parsed?.error) throw new Error(parsed.error.message ?? 'خطأ MCP غير معروف'); return parsed?.result ?? parsed }
       const parsed = JSON.parse(text)
       if (parsed?.error) throw new Error(parsed.error.message ?? 'خطأ MCP غير معروف')
       return parsed?.result ?? parsed
@@ -222,6 +223,33 @@ class RemoteMcpConnection implements McpConnectionLike {
       signal.removeEventListener('abort', abort)
     }
   }
+}
+
+async function readSseResult(response: Response, requestId: unknown, maxBytes: number): Promise<any> {
+  if (!response.body) throw new Error('استجابة SSE بلا body')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let bytes = 0
+  try {
+    while (true) {
+      const part = await reader.read()
+      if (part.done) break
+      bytes += part.value.byteLength
+      if (bytes > maxBytes) throw new Error(`بث MCP أكبر من الحد (${maxBytes} بايت)`)
+      buffer += decoder.decode(part.value, { stream: true })
+      const blocks = buffer.split(/\r?\n\r?\n/)
+      buffer = blocks.pop() ?? ''
+      for (const block of blocks) {
+        const data = block.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
+        if (!data || data === '[DONE]') continue
+        const parsed = JSON.parse(data)
+        if (parsed?.error) throw new Error(parsed.error.message ?? 'خطأ MCP غير معروف')
+        if (parsed?.id === requestId) return parsed.result ?? parsed
+      }
+    }
+    throw new Error('لم يستجب خادم MCP عن بُعد بحل متطابق')
+  } finally { try { await reader.cancel() } catch {}; reader.releaseLock() }
 }
 
 async function readBoundedResponse(response: Response, maxBytes: number): Promise<string> {

@@ -1,6 +1,8 @@
 import { startTransition, useEffect, useId, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
 import { Bot, Brain, Check, CheckCircle2, ChevronDown, Code2, Copy, FolderOpen, Gauge, KeyRound, ListChecks, LoaderCircle, Paperclip, PanelLeft, PanelRight, Plus, Search, Send, Settings, Shield, ShieldAlert, Square, Trash2, X, XCircle } from 'lucide-react'
 import type { AgentEvent, AgentRunState, ApprovalRequest, Attachment, AuditEvent, Message, ProviderSettings, Session, SessionRunState, SubagentEvent, Todo, TreeEntry, UsageSummary } from '../../shared/types'
 import { getGoModel, GO_MODELS, goProviderConfig } from '../../shared/models'
@@ -175,7 +177,17 @@ export function App() {
 
   async function resume() {
     if (!active) return
-    try { setRunState({ ...(runState as AgentRunState), sessionId: active.id, status: 'running' }); await window.rCode.agent.resume(active.id) } catch (error) { setAppError(errorText(error)) }
+    try { if (runState) setRunState({ ...runState, status: 'running' }); await window.rCode.agent.resume(active.id) } catch (error) { setAppError(errorText(error)) }
+  }
+
+  function editUserMessage(message: Message) {
+    setInput(message.content)
+    requestAnimationFrame(() => document.getElementById('agent-prompt')?.focus())
+  }
+
+  async function regenerateAssistant(message: Message) {
+    if (!active) return
+    try { await window.rCode.agent.send(active.id, `أعد توليد الرد السابق مع الحفاظ على نفس الطلب وتجنب تكرار الأدوات المكتملة. الرد السابق:\n${message.content.slice(0, 4_000)}`) } catch (error) { setAppError(errorText(error)) }
   }
 
   async function updateSession(patch: Partial<Pick<Session, 'permissionMode' | 'agentMode'>>) {
@@ -241,7 +253,7 @@ export function App() {
         {hasMessages && <header className="topbar"><div className="topbar-left"><span className="session-title">{active?.title}</span>{active?.systemPrompt && <span className="prompt-badge" title={active.systemPrompt}><Code2 size={11}/> Prompt محفوظ</span>}</div><div className="topbar-right">{todoProgress.total > 0 && <button aria-pressed={planOpen} aria-label="إظهار أو إخفاء خطة العمل" className={`plan-toggle-btn ${planOpen ? 'on' : ''}`} title={todoProgress.current ? `الخطوة الحالية: ${todoProgress.current}` : 'خطة العمل'} onClick={() => { setPlanOpen(!planOpen); if (!planOpen) planUserClosed.current = false; else planUserClosed.current = true }}><ListChecks size={13}/><span>خطة العمل</span><span className="plan-toggle-progress">{todoProgress.done.toLocaleString('ar')}/{todoProgress.total.toLocaleString('ar')}</span></button>}<ModelSelect provider={provider} change={changeModel}/><button aria-pressed={active?.agentMode === 'plan'} className={`mode-pill ${active?.agentMode === 'plan' ? 'plan' : ''}`} onClick={() => void updateSession({ agentMode: active?.agentMode === 'plan' ? 'build' : 'plan' })}>{active?.agentMode === 'plan' ? 'Plan' : 'Build'}</button><button aria-pressed={active?.permissionMode === 'full'} className={`perm-pill ${active?.permissionMode === 'full' ? 'full' : ''}`} onClick={() => void updateSession({ permissionMode: active?.permissionMode === 'full' ? 'ask' : 'full' })}>{active?.permissionMode === 'full' ? <><ShieldAlert size={13}/> وصول كامل</> : <><Shield size={13}/> اسألني</>}</button><span className={`git-pill ${active?.gitTracked ? 'on' : ''}`} title={active?.gitTracked ? 'هذه الجلسة تحفظ كل تعديل في Git تلقائيًا' : 'هذه الجلسة دون تتبع Git؛ كل تعديل يُنفذ مباشرة دون commit'}><Code2 size={13}/> {active?.gitTracked ? 'Git مفعّل' : 'Git مققل'}</span>{active && <button aria-label="حذف المحادثة" className="delete-chat-btn" title="حذف المحادثة" onClick={() => void removeSession(active)}><Trash2 size={14}/></button>}</div></header>}
        {!hasMessages ? <Welcome input={input} setInput={setInput} send={send} provider={provider} changeModel={changeModel} active={active} newSession={newSession} view={view} cancel={cancel} pendingAttachments={pendingAttachments} setPendingAttachments={setPendingAttachments} sessionPrompt={sessionPrompt} setSessionPrompt={setSessionPrompt}/> : <div className="chat-view">
          {runState?.status === 'interrupted' && <div className="resume-banner"><span>توقف التشغيل السابق عند الجولة {runState.step.toLocaleString('ar')}.</span><button onClick={() => void resume()}>استئناف التنفيذ</button></div>}
-        <div className="messages" ref={messagesRef} onScroll={trackScroll}><div className="messages-inner">{groupConversation(view.messages).map((item) => item.kind === 'execution' ? <ExecutionStage key={item.id} messages={item.messages}/> : <MessageBubble key={item.message.id} message={item.message} streaming={view.streamingId === item.message.id}/>)}<div ref={endRef}/></div></div>
+         <div className="messages" ref={messagesRef} onScroll={trackScroll}><div className="messages-inner">{groupConversation(view.messages).map((item) => item.kind === 'execution' ? <ExecutionStage key={item.id} messages={item.messages}/> : <MessageBubbleWithActions key={item.message.id} message={item.message} streaming={view.streamingId === item.message.id} onEdit={editUserMessage} onRegenerate={regenerateAssistant}/>)}<div ref={endRef}/></div></div>
         {view.subagents.length > 0 && <SubagentPanel subagents={view.subagents}/>}
         {showLatest && <button aria-label="الانتقال إلى أحدث الرسائل" className="jump-latest" onClick={jumpLatest}><ChevronDown size={14}/> أحدث الرسائل</button>}
         <Composer input={input} setInput={setInput} send={send} provider={provider} changeModel={changeModel} active={active} view={view} cancel={cancel} dismissError={() => active && updateView(active.id, (current) => ({ ...current, error: null }))} pendingAttachments={pendingAttachments} setPendingAttachments={setPendingAttachments}/>
@@ -371,6 +383,11 @@ function GitInitModal({ workspace, create, close }: { workspace: string; create(
 function ReasoningBlock({ reasoning }: { reasoning: string }) { const [open, setOpen] = useState(false); return <div className={`reasoning-block ${open ? 'open' : ''}`}><button className="reasoning-head" onClick={() => setOpen(!open)} aria-expanded={open}><Brain size={13}/> <span>تفكير النموذج</span><ChevronDown size={12} className={open ? 'rot' : ''}/></button>{open && <pre className="reasoning-body">{reasoning}</pre>}</div> }
 
 function MessageBubble({ message, streaming }: { message: Message; streaming: boolean }) { const waiting = streaming && !message.content && !message.toolCalls?.length; return <article className={`message ${message.role} ${streaming ? 'streaming' : ''}`}>{message.role === 'assistant' && <div className="msg-avatar assistant"><Bot size={17}/></div>}<div className="msg-body"><div className="msg-meta"><strong>{message.role === 'user' ? 'أنت' : 'Rahma Code Agent'}</strong>{message.role === 'assistant' && <span className="msg-badge">وكيل</span>}<time>{new Date(message.createdAt).toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' })}</time>{waiting && <span className="writing-state"><i/><i/><i/> يجهز الرد</span>}</div>{message.reasoning && <ReasoningBlock reasoning={message.reasoning}/>}{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((att, i) => att.mimeType.startsWith('image/') ? <img key={`${att.name}-${i}`} src={`data:${att.mimeType};base64,${att.data}`} alt={att.name} className="message-attachment-img"/> : <div key={`${att.name}-${i}`} className="message-attachment-file"><Code2 size={14}/>{att.name}</div>)}</div> : null}{message.content && <div className="msg-text streaming-text"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code({ className, children }) { const block = /language-(\w+)/.exec(className ?? ''); return block ? <CodeBlock language={block[1] ?? 'text'} code={String(children).replace(/\n$/, '')}/> : <code className="inline-code">{children}</code> }, pre({ children }) { return <>{children}</> }, a({ children, href }) { return <a href={safeLink(href)} target="_blank" rel="noreferrer">{children}</a> }, table({ children }) { return <div className="table-scroll"><table>{children}</table></div> } }}>{message.content}</ReactMarkdown>{streaming && <span className="stream-caret" aria-hidden="true"/>}</div>}{message.toolCalls?.length ? <div className="tool-list">{message.toolCalls.map((tool) => <ToolCard key={tool.id} tool={tool}/>)}</div> : null}</div>{message.role === 'user' && <div className="msg-avatar user"><Bot size={17}/></div>}</article> }
+function MessageBubbleWithActions({ message, streaming, onEdit, onRegenerate }: { message: Message; streaming: boolean; onEdit(message: Message): void; onRegenerate(message: Message): void }) {
+  if (streaming || message.role === 'tool') return <MessageBubble message={message} streaming={streaming}/>
+  return <div className="message-with-actions"><MessageBubble message={message} streaming={false}/><div className="message-actions">{message.role === 'user' ? <button onClick={() => onEdit(message)}>تعديل الرسالة</button> : message.role === 'assistant' && message.content ? <button onClick={() => void onRegenerate(message)}>إعادة توليد</button> : null}</div></div>
+}
+
 function TodoList({ todos, toggle }: { todos: Todo[]; toggle?: (todo: Todo) => void }) {
   return <div className="todo-body">{todos.map((todo, index) => <div key={todo.id} className={`todo-item ${todo.status}`}>
     <span className="todo-index">{index + 1}</span>
@@ -426,13 +443,20 @@ function DiffOrText({ name, value }: { name: string; value: string }) {
 }
 
 function AnsiOutput({ value }: { value: string }) {
-  const parts = value.split(/(\x1b\[[0-9;]*m)/g)
-  let color = ''
-  return <pre className="terminal-output">{parts.map((part, index) => {
-    const code = /^\x1b\[([0-9;]*)m$/.exec(part)
-    if (code) { color = code[1] === '31' ? 'ansi-red' : code[1] === '32' ? 'ansi-green' : code[1] === '33' ? 'ansi-yellow' : code[1] === '34' ? 'ansi-blue' : code[1] === '0' || code[1] === '' ? '' : color; return null }
-    return <span className={color} key={index}>{part}</span>
-  })}</pre>
+  const host = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!host.current) return
+    const terminal = new Terminal({ convertEol: true, disableStdin: true, scrollback: 5_000, fontFamily: 'Cascadia Mono, Consolas, monospace', fontSize: 12, theme: { background: '#0b0f16', foreground: '#d7e1ef' } })
+    const fit = new FitAddon()
+    terminal.loadAddon(fit)
+    terminal.open(host.current)
+    fit.fit()
+    terminal.write(value.replace(/\r?\n/g, '\r\n'))
+    const observer = new ResizeObserver(() => fit.fit())
+    observer.observe(host.current)
+    return () => { observer.disconnect(); terminal.dispose() }
+  }, [value])
+  return <div ref={host} className="terminal-output" aria-label="مخرجات الطرفية" />
 }
 
 function SettingsModal({ value, close, saved }: { value: ProviderSettings; close(): void; saved(value: ProviderSettings): void }) {

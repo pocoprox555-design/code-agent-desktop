@@ -19,7 +19,7 @@ const SUBAGENT_MAX_STEPS = 30
 const SUBAGENT_MAX_RUNTIME_MS = 10 * 60_000
 const PARALLEL_READ_TOOLS = new Set(['read_file', 'read_files', 'read_message', 'count_lines', 'list_directory', 'glob_files', 'search_files', 'search_symbols', 'get_file_info', 'tree'])
 const MUTATING_TOOLS = new Set(['write_file', 'edit_file', 'patch_file', 'create_directory', 'run_powershell', 'git_commit', 'git_revert', 'git_revert_step', 'delete_file', 'move_file', 'append_file', 'git_add', 'git_restore', 'git_checkout', 'git_reset'])
-const SUBAGENT_TOOL_NAMES = new Set(['read_file', 'read_files', 'read_message', 'count_lines', 'list_directory', 'glob_files', 'search_files', 'search_symbols', 'get_file_info', 'tree', 'load_skill', 'web_fetch', 'web_search', 'git_status', 'git_diff', 'git_log', 'git_branch', 'git_show'])
+const SUBAGENT_TOOL_NAMES = new Set(['read_file', 'read_files', 'read_message', 'count_lines', 'list_directory', 'glob_files', 'search_files', 'search_symbols', 'get_file_info', 'tree', 'load_skill', 'web_fetch', 'web_search', 'git_status', 'git_diff', 'git_log', 'git_branch', 'git_show', 'write_file', 'edit_file'])
 const projectInstructionsCache = new Map<string, { modifiedAt: number; content: string }>()
 
 interface PendingApproval { sessionId: string; runId: string; request: ApprovalRequest; rememberKey?: string; timer: NodeJS.Timeout; abort: () => void; resolve(value: boolean): void; reject(error: Error): void }
@@ -503,7 +503,7 @@ function systemPrompt(session: ReturnType<AppDatabase['getSession']>, instructio
 ## 5. الحساسية للزمن
 - للأسئلة المتعلقة بحالة حالية أو معلومات حديثة أو إصدارات، ابحث وتحقق عبر web_search ثم web_fetch واذكر الزمن في إجابتك.` + (session.gitTracked ? '\n- تتبع Git التلقائي مفعّل: كل أداة تعديل تحفظ مساراتها فورًا في commit وتعيد hash داخل gitAutoCommit، فقد يكون git status نظيفًا بعد النجاح. للتراجع استخدم git_revert مع hash المعاد ولا تستخدم git_restore.' : '')
   const commandsBlock = commands.length ? `\n\nأوامر معرفة (Slash Commands) متاحة في هذا المشروع — عند طلب المستخدم أمرًا منها نفّذه عبر run_command مع تمرير الاسم والوسائط:\n${commands.map((command) => `- /${command.name}${command.description ? `: ${command.description}` : ''}`).join('\n')}` : ''
-  return `أنت Rahma Code Agent، مهندس برمجيات محترف من الطراز العالمي يعمل على Windows، ومسؤول بصفة مباشرة عن سلامة هذا المشروع وصحة كل تعديل فيه. أنت لا تنفّذ أوامر حرفيًا فحسب، بل تفهم المشروع وتحللّه وتحميه من الأخطاء وتدافع عن جودة كوده وسلامة سير عمله. رد بالعربية الواضحة وأبق أسماء الكود والأوامر بلغتها الأصلية.
+  return `أنت Rahma Code Agent، مهندس برمجيات محترف من الطراز العالمي يعمل على Windows، ومسؤول بصفة مباشرة عن سلامة هذا المشروع وصحة كل تعديل فيه. أنت لا تنفّذ أوامر حرفيًا فحسب، بل تفهم المشروع وتحللّه وتحميه من الأخطاء وتدافع عن جودة كوده وسلامة سير عمله. رد بنفس لغة المستخدم التي يخاطبك بها — إن كتب بالعربية فبالعربية، وإن كتب بالإنجليزية فبالإنجليزية. أبق أسماء الكود والأوامر بلغتها الأصلية.
 التاريخ الحالي: ${new Date().toISOString().slice(0, 10)}
 مساحة العمل الوحيدة المسموحة: ${session.workspace}
 الوضع: ${session.agentMode === 'build' ? 'Build: نفّذ المهمة واستخدم الأدوات حتى تكتمل' : 'Plan: حلل واقرأ فقط ولا تعدل'}
@@ -529,7 +529,7 @@ ${task}
 - استخدم المسارات النسبية إلى جذر مساحة العمل فقط، واجمع القراءات والبحوث المستقلة في استدعاء أدوات واحد، وتابع read_files بالـ cursor حتى complete=true عند الحاجة.
 - كفى بالقراءة بمجرد حصولك على المعلومات اللازمة: في أول جولة لا تتطلب أدوات جديدة أعد الخلاصة النهائية فورًا، ولا تعِد قراءة ملف كبير أكثر من مرة.
 
-عند الانتهاء أعد خلاصة نهائية منظمة بالعربية يعتمد عليها المشرف بشكل كامل:
+عند الانتهاء أعد خلاصة نهائية منظمة بنفس لغة المهمة يعتمد عليها المشرف بشكل كامل:
 - الإجابات الدقيقة عن أسئلة المهمة مرفقة بالأدلة (المسار ورقم السطر إن أمكن).
 - البنية والعلاقات بين الملفات التي اكتشفتها.
 - أي مخاطر أو أجزاء لم تُفحص.

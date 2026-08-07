@@ -51,7 +51,7 @@ test('migrates legacy databases and clears summaries without watermarks', async 
   assert.deepEqual(db.listMessages('s').map((message) => message.content), ['first', 'second'])
   assert.deepEqual(db.getSummary('s'), { text: '', throughSequence: 0 })
   const raw = new DatabaseSync(path)
-   assert.equal((raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 11)
+   assert.equal((raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 12)
   raw.close()
   db.close()
 })

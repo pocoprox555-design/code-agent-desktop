@@ -14,7 +14,7 @@ export class DeadlineExceededError extends Error {}
 export class ProviderTimeoutError extends Error {}
 export class ProviderResponseTooLargeError extends Error {}
 
-const MAX_CONCURRENT_MODEL_REQUESTS = 2
+const MAX_CONCURRENT_MODEL_REQUESTS = 4
 const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 interface RequestSlotEntry { signal?: AbortSignal; deadlineAt?: number; resolve(): void; reject(error: Error): void; abort(): void; timer?: NodeJS.Timeout; settled: boolean }
 interface RequestSlotState { active: number; queue: RequestSlotEntry[] }
@@ -235,7 +235,7 @@ function finishStream(style: 'chat' | 'responses' | 'anthropic', state: StreamSt
 }
 
 function toChatBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number): Record<string, unknown> {
-  return { model: config.model, messages: normalizeChatMessages(messages), ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0.2, max_tokens: maxOutput }
+  return { model: config.model, messages: normalizeChatMessages(messages), ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0, max_tokens: maxOutput }
 }
 
 function normalizeChatMessages(messages: ModelInput[]): Array<Record<string, unknown>> {
@@ -349,7 +349,7 @@ function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: 
   const lastMessage = merged.at(-1)
   const lastBlock = lastMessage?.content.at(-1)
   if (lastBlock && typeof lastBlock === 'object') (lastBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' }
-  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(tools.length ? { tools: tools.map((item) => ({ name: item.function.name, description: item.function.description, input_schema: item.function.parameters })) } : {}), max_tokens: maxOutput, temperature: 0.2 }
+  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(tools.length ? { tools: tools.map((item) => ({ name: item.function.name, description: item.function.description, input_schema: item.function.parameters })) } : {}), max_tokens: maxOutput, temperature: 0 }
 }
 
 function parseAnthropic(data: Record<string, any>): ModelReply {
@@ -387,11 +387,11 @@ function usage(data: any, input: string, output: string): ModelUsage | undefined
 function mergeUsage(first: ModelUsage | undefined, second: ModelUsage | undefined): ModelUsage | undefined {
   if (!first) return second
   if (!second) return first
-  const input = Math.max(first.input ?? 0, second.input ?? 0)
-  const output = Math.max(first.output ?? 0, second.output ?? 0)
-  const cacheRead = Math.max(first.cacheRead ?? 0, second.cacheRead ?? 0)
-  const cacheWrite = Math.max(first.cacheWrite ?? 0, second.cacheWrite ?? 0)
-  const reasoning = Math.max(first.reasoning ?? 0, second.reasoning ?? 0)
+  const input = (first.input ?? 0) + (second.input ?? 0)
+  const output = (first.output ?? 0) + (second.output ?? 0)
+  const cacheRead = (first.cacheRead ?? 0) + (second.cacheRead ?? 0)
+  const cacheWrite = (first.cacheWrite ?? 0) + (second.cacheWrite ?? 0)
+  const reasoning = (first.reasoning ?? 0) + (second.reasoning ?? 0)
   return { input, output, total: input + output, ...(cacheRead ? { cacheRead } : {}), ...(cacheWrite ? { cacheWrite } : {}), ...(reasoning ? { reasoning } : {}) }
 }
 function finiteNumber(value: unknown): number { const parsed = Number(value ?? 0); return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0 }

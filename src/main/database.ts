@@ -275,6 +275,7 @@ export class AppDatabase {
     const current = this.getSession(id)
     const updatedAt = Date.now()
     this.db.prepare('UPDATE sessions SET plan_approved=1,updated_at=? WHERE id=?').run(updatedAt, id)
+    this.addAudit({ sessionId: id, category: 'agent', action: 'plan-approval', detail: 'اعتمد المستخدم خطة العمل قبل الانتقال إلى Build.', outcome: 'allowed' })
     return { ...current, planApproved: true, updatedAt }
   }
 
