@@ -248,7 +248,13 @@ export async function runPowerShell(command: string, cwd: string, signal?: Abort
       killer.unref()
     }
     const timeout = setTimeout(() => { timedOut = true; killTree() }, timeoutMs)
-    const abort = (): void => killTree()
+    const abort = (): void => {
+      if (settled) return
+      killTree()
+      settled = true
+      cleanup()
+      reject(new DOMException('تم إلغاء الأمر', 'AbortError'))
+    }
     signal?.addEventListener('abort', abort, { once: true })
     child.stdout.on('data', append)
     child.stderr.on('data', append)
@@ -259,7 +265,7 @@ export async function runPowerShell(command: string, cwd: string, signal?: Abort
       if (signal?.aborted) { reject(new DOMException('تم إلغاء الأمر', 'AbortError')); return }
       resolve({ output: Buffer.concat(chunks).toString('utf8'), exitCode: code ?? -1, timedOut, truncated, durationMs: Date.now() - startedAt })
     })
-    function cleanup(): void { clearTimeout(timeout); signal?.removeEventListener('abort', abort) }
+    function cleanup(): void { clearTimeout(timeout); signal?.removeEventListener('abort', abort); child.stdout.removeListener('data', append); child.stderr.removeListener('data', append) }
   })
 }
 
@@ -279,7 +285,7 @@ function validateSandboxCommand(command: string, cwd: string): string | undefine
   for (const part of commands) {
     const name = /^\.?[\\/]?([^\s]+?)(?:\.exe)?(?:\s|$)/i.exec(part)?.[1]
     if (!name) return 'تعذر التحقق من اسم الأمر.'
-    const normalized = name.split(/[\\/]/).pop() ?? name
+    const normalized = (name.split(/[\\/]/).pop() ?? name).replace(/\.(?:exe|cmd)$/i, '')
     if (!POWERSHELL_ALLOWED_COMMANDS.has(normalized) && !POWERSHELL_ALLOWED_COMMANDS.has(`${normalized[0]?.toUpperCase() ?? ''}${normalized.slice(1)}`)) return `الأمر غير موجود في allowlist: ${normalized}`
   }
   return undefined

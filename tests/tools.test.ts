@@ -140,6 +140,18 @@ test('full mode runs PowerShell without requesting approval', async (t) => {
   assert.equal(approvals, 0)
 })
 
+test('PowerShell accepts Windows command shims and aborts promptly', async (t) => {
+  const root = await fixture(t)
+  const result = JSON.parse(await executeTool('run_powershell', { command: 'node.cmd --version', cwd: '.' }, context(root)))
+  assert.equal(result.ok, true)
+  const controller = new AbortController()
+  const pending = executeTool('run_powershell', { command: 'node --eval "setTimeout(() => {}, 60000)"', cwd: '.', timeout_ms: 600000 }, { ...context(root), signal: controller.signal })
+  const rejection = assert.rejects(pending, /إلغاء الأمر|AbortError/)
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  controller.abort()
+  await rejection
+})
+
 test('ask mode shows a bounded diff before editing a file', async (t) => {
   const root = await fixture(t)
   const file = join(root, 'target.txt')
