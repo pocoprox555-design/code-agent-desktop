@@ -31,7 +31,6 @@ export const toolDefinitions: ToolDefinition[] = [
   tool('search_files', 'ابحث نصيًا داخل ملف محدد أو ملفات مجلد، وأعد file:line:column.', { path: str('ملف محدد أو مجلد بداية، الافتراضي الجذر'), pattern: str('نص أو regex'), include: str('glob اختياري مثل *.ts عند البحث في مجلد'), fixed_strings: bool('اعتبر النمط نصًا حرفيًا'), case_sensitive: bool('بحث حساس لحالة الأحرف'), limit: integer('أقصى عدد نتائج', 1, MAX_SEARCH_RESULTS) }, ['pattern']),
   tool('search_symbols', 'ابحث عن رموز برمجية (دوال، أصناف، واجهات، متغيرات عامة) في المشروع وأعدها مع أرقام الأسطر. مفيد لتتبع التعريفات في المشاريع الكبيرة دون قراءة كل ملف.', { path: str('مجلد البداية، الافتراضي الجذر'), query: str('اسم الرمز أو جزء منه (غير حساس لحالة الأحرف)'), limit: integer('أقصى عدد نتائج', 1, MAX_SEARCH_RESULTS) }, ['query']),
   tool('write_file', 'أنشئ ملفًا أو استبدل محتواه بالكامل.', { path: str('مسار الملف'), content: str('المحتوى الكامل') }, ['path', 'content']),
-  tool('patch_file', 'عدّل ملف بعدة تغييرات دفعة واحدة. كل تغيير يحدد start_line و end_line و new_lines و expected (اختياري: نص الأسطر الحالية من start_line إلى end_line كما قرأتها — يُتحقق من مطابقته قبل التطبيق ويرفض التعديل إن تغيّرت). اقرأ الملف أولًا بأداة read_file وضمّن expected دائمًا لضمان عدم تعديل مواضع خاطئة. أعد diff كامل.', { path: str('مسار الملف'), patches: str('مصفوفة JSON من التغييرات: [{start_line, end_line, new_lines, expected}]') }, ['path', 'patches']),
   tool('create_directory', 'أنشئ مجلدًا.', { path: str('مسار المجلد') }, ['path']),
   tool('get_file_info', 'أعد معلومات ملف أو مجلد مع عدد الأسطر.', { path: str('المسار') }, ['path']),
   tool('web_fetch', 'اجلب صفحة HTTPS عامة. يمنع localhost ويتطلب موافقة.', { url: str('رابط HTTPS'), max_bytes: integer('حد المحتوى', 1000, 500000) }, ['url']),
@@ -90,7 +89,7 @@ export interface ToolContext {
 
 export async function executeTool(name: string, input: Record<string, unknown>, context: ToolContext): Promise<string> {
   if (context.deadlineAt !== undefined && Date.now() >= context.deadlineAt) return failure('DEADLINE_EXCEEDED', 'انتهى الوقت المتاح للجولة الحالية.')
-  const mutating = ['write_file', 'edit_file', 'patch_file', 'create_directory', 'run_powershell', 'git_commit', 'git_revert', 'git_revert_step', 'git_add', 'git_fetch', 'git_pull', 'git_push', 'git_checkpoint', 'git_isolate_branch', 'delete_file', 'move_file', 'append_file', 'git_restore', 'git_checkout', 'git_reset'].includes(name)
+  const mutating = ['write_file', 'edit_file', 'create_directory', 'run_powershell', 'git_commit', 'git_revert', 'git_revert_step', 'git_add', 'git_fetch', 'git_pull', 'git_push', 'git_checkpoint', 'git_isolate_branch', 'delete_file', 'move_file', 'append_file', 'git_restore', 'git_checkout', 'git_reset'].includes(name)
   if (context.session.agentMode === 'plan' && mutating) return failure('PLAN_MODE', 'وضع Plan لا يسمح بالتعديل أو تنفيذ الأوامر.')
   const destructive = ['delete_file', 'git_restore', 'git_checkout', 'git_reset', 'git_revert', 'git_revert_step'].includes(name)
 
@@ -186,7 +185,6 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
     case 'search_symbols': return searchSymbols(target.absolute, root.canonical, requiredString(input.query, 'query'), number(input.limit, MAX_SEARCH_RESULTS, 1, MAX_SEARCH_RESULTS), context.signal)
     case 'write_file': { const output = await writeFileAtomic(target.absolute, target.relative, requiredString(input.content, 'content')); return withAutoCommit(output, await maybeAutoCommit(context, root.canonical, 'write_file', [target.relative])) }
     case 'edit_file': { const output = await editFile(target.absolute, target.relative, requiredString(input.old_string, 'old_string'), String(input.new_string ?? '')); return withAutoCommit(output, await maybeAutoCommit(context, root.canonical, 'edit_file', [target.relative])) }
-    case 'patch_file': { const output = await patchFile(target.absolute, target.relative, requiredString(input.patches, 'patches')); return withAutoCommit(output, await maybeAutoCommit(context, root.canonical, 'patch_file', [target.relative])) }
     case 'create_directory': { await fs.mkdir(target.absolute, { recursive: true }); return success({ path: target.relative, created: true }) }
     case 'get_file_info': return fileInfo(target.absolute, target.relative)
     case 'web_fetch': return webFetch(requiredString(input.url, 'url'), number(input.max_bytes, 200_000, 1_000, 500_000), context.signal, context.deadlineAt)
@@ -824,10 +822,6 @@ async function buildApprovalPreview(name: string, input: Record<string, unknown>
   } else if (name === 'edit_file') {
     const applied = applyEdit(current ?? '', requiredString(input.old_string, 'old_string'), String(input.new_string ?? ''))
     payload = String(input.new_string ?? '')
-    next = applied.content
-  } else if (name === 'patch_file') {
-    const applied = applyPatches(current ?? '', requiredString(input.patches, 'patches'))
-    payload = String(input.patches)
     next = applied.content
   } else if (name === 'append_file') {
     payload = requiredString(input.content, 'content')

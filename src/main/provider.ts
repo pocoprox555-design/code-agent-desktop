@@ -47,9 +47,19 @@ export async function requestModel(config: ProviderConfig, messages: ModelInput[
   throw lastError
 }
 
-export function estimateModelRequestTokens(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutputTokens = config.maxOutputTokens): number {
-  const body = config.apiStyle === 'chat' ? toChatBody(config, messages, tools, maxOutputTokens) : config.apiStyle === 'responses' ? toResponsesBody(config, messages, tools, maxOutputTokens) : toAnthropicBody(config, messages, tools, maxOutputTokens)
-  return estimateSerializedTokens(JSON.stringify(body))
+export function estimateModelRequestTokens(_config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], _maxOutputTokens?: number): number {
+  let total = 0
+  for (const message of messages) {
+    const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+    total += estimateSerializedTokens(content) + 30
+    if (message.tool_calls) {
+      for (const call of message.tool_calls) {
+        total += estimateSerializedTokens(call.function.name + call.function.arguments) + 50
+      }
+    }
+  }
+  total += tools.length * 180 + 400
+  return Math.max(1, total)
 }
 
 function estimateSerializedTokens(value: string): number {
@@ -323,6 +333,8 @@ function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: 
   const systemMessages = messages.filter((message) => message.role === 'system')
   const systemBlocks = systemMessages.map((message) => ({ type: 'text', text: typeof message.content === 'string' ? message.content : message.content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('') } as Record<string, unknown>))
   if (systemBlocks.length) systemBlocks.at(-1)!.cache_control = { type: 'ephemeral' }
+  const toolDefs: Record<string, unknown>[] = tools.length ? tools.map((item) => ({ name: item.function.name, description: item.function.description, input_schema: item.function.parameters } as Record<string, unknown>)) : []
+  if (toolDefs.length) toolDefs.at(-1)!.cache_control = { type: 'ephemeral' }
   const output: Array<{ role: 'user' | 'assistant'; content: unknown }> = []
   for (const message of messages.filter((item) => item.role !== 'system')) {
     if (message.role === 'tool') { const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content); output.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: message.tool_call_id, content, is_error: content.includes('"ok": false') || content.startsWith('خطأ:') }] }); continue }
@@ -346,10 +358,16 @@ function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: 
      output.push({ role: message.role as 'user' | 'assistant', content })
   }
   const merged = mergeAnthropicMessages(output)
+  const middleIdx = Math.floor(merged.length / 2)
+  if (merged.length >= 4) {
+    const middleMessage = merged[middleIdx]
+    const middleBlock = middleMessage?.content.at(-1)
+    if (middleBlock && typeof middleBlock === 'object') (middleBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' }
+  }
   const lastMessage = merged.at(-1)
   const lastBlock = lastMessage?.content.at(-1)
   if (lastBlock && typeof lastBlock === 'object') (lastBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' }
-  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(tools.length ? { tools: tools.map((item) => ({ name: item.function.name, description: item.function.description, input_schema: item.function.parameters })) } : {}), max_tokens: maxOutput, temperature: 0 }
+  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(toolDefs.length ? { tools: toolDefs } : {}), max_tokens: maxOutput, temperature: 0 }
 }
 
 function parseAnthropic(data: Record<string, any>): ModelReply {

@@ -372,57 +372,6 @@ test('blocks private IPv4 and IPv6 web destinations', () => {
   for (const address of ['93.184.216.34', '2606:4700:4700::1111']) assert.equal(isBlockedAddress(address), false, address)
 })
 
-test('patch_file applies multiple edits from bottom to top without shifting', async (t) => {
-  const root = await fixture(t)
-  const file = join(root, 'multi.txt')
-  await writeFile(file, 'a\nb\nc\nd\ne\nf\n', 'utf8')
-  const patches = JSON.stringify([
-    { start_line: 1, end_line: 1, new_lines: 'A' },
-    { start_line: 3, end_line: 3, new_lines: 'C1\nC2' },
-    { start_line: 6, end_line: 6, new_lines: 'F' }
-  ])
-  const result = JSON.parse(await executeTool('patch_file', { path: 'multi.txt', patches }, context(root)))
-  assert.equal(result.ok, true)
-  assert.equal(result.data.patchesApplied, 3)
-  const text = await readFile(file, 'utf8')
-  assert.equal(text, 'A\nb\nC1\nC2\nd\ne\nF\n')
-})
-
-test('patch_file rejects overlapping edits', async (t) => {
-  const root = await fixture(t)
-  const file = join(root, 'overlap.txt')
-  await writeFile(file, 'a\nb\nc\nd\n', 'utf8')
-  const patches = JSON.stringify([
-    { start_line: 1, end_line: 3, new_lines: 'x' },
-    { start_line: 3, end_line: 4, new_lines: 'y' }
-  ])
-  await assert.rejects(() => executeTool('patch_file', { path: 'overlap.txt', patches }, context(root)), /تتداخل/)
-  assert.equal(await readFile(file, 'utf8'), 'a\nb\nc\nd\n')
-})
-
-test('patch_file verifies expected content before applying', async (t) => {
-  const root = await fixture(t)
-  const file = join(root, 'expected.txt')
-  await writeFile(file, 'keep\nremove\n', 'utf8')
-  const matching = JSON.stringify([{ start_line: 2, end_line: 2, new_lines: 'replaced', expected: 'remove' }])
-  const result = JSON.parse(await executeTool('patch_file', { path: 'expected.txt', patches: matching }, context(root)))
-  assert.equal(result.ok, true)
-  assert.equal(await readFile(file, 'utf8'), 'keep\nreplaced\n')
-  await writeFile(file, 'keep\nremove\n', 'utf8')
-  const mismatching = JSON.stringify([{ start_line: 2, end_line: 2, new_lines: 'replaced', expected: 'different' }])
-  await assert.rejects(() => executeTool('patch_file', { path: 'expected.txt', patches: mismatching }, context(root)), /لا تطابق/)
-  assert.equal(await readFile(file, 'utf8'), 'keep\nremove\n')
-})
-
-test('patch_file preserves CRLF and accepts expected text with a trailing newline', async (t) => {
-  const root = await fixture(t)
-  const file = join(root, 'patch-crlf.java')
-  await writeFile(file, 'first\r\nsecond\r\nthird\r\n', 'utf8')
-  const patches = JSON.stringify([{ start_line: 2, end_line: 2, new_lines: 'updated', expected: 'second\n' }])
-  await executeTool('patch_file', { path: 'patch-crlf.java', patches }, context(root))
-  assert.equal(await readFile(file, 'utf8'), 'first\r\nupdated\r\nthird\r\n')
-})
-
 test('todo_write and todo_read persist and update the session plan', async (t) => {
   const root = await fixture(t)
   let todos: Array<{ content: string; status?: string; priority?: string }> = []

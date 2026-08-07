@@ -18,7 +18,7 @@ const MAX_PARALLEL_READ_TOOLS = 6
 const SUBAGENT_MAX_STEPS = 30
 const SUBAGENT_MAX_RUNTIME_MS = 10 * 60_000
 const PARALLEL_READ_TOOLS = new Set(['read_file', 'read_files', 'read_message', 'count_lines', 'list_directory', 'glob_files', 'search_files', 'search_symbols', 'get_file_info', 'tree'])
-const MUTATING_TOOLS = new Set(['write_file', 'edit_file', 'patch_file', 'create_directory', 'run_powershell', 'git_commit', 'git_revert', 'git_revert_step', 'delete_file', 'move_file', 'append_file', 'git_add', 'git_restore', 'git_checkout', 'git_reset'])
+const MUTATING_TOOLS = new Set(['write_file', 'edit_file', 'create_directory', 'run_powershell', 'git_commit', 'git_revert', 'git_revert_step', 'delete_file', 'move_file', 'append_file', 'git_add', 'git_restore', 'git_checkout', 'git_reset'])
 const SUBAGENT_TOOL_NAMES = new Set(['read_file', 'read_files', 'read_message', 'count_lines', 'list_directory', 'glob_files', 'search_files', 'search_symbols', 'get_file_info', 'tree', 'load_skill', 'web_fetch', 'web_search', 'git_status', 'git_diff', 'git_log', 'git_branch', 'git_show', 'write_file', 'edit_file'])
 const projectInstructionsCache = new Map<string, { modifiedAt: number; content: string }>()
 
@@ -108,6 +108,9 @@ export class AgentRunner {
         this.drainPending(sessionId, run)
         this.setStatus(sessionId, step ? `يحلل نتيجة الخطوة ${step}...` : 'يحلل المشروع ويجهز السياق...', run)
         const prepared = await this.buildContext(session, config, availableTools, controller.signal, run.deadlineAt, run.runId)
+        const todos = this.db.getTodos(sessionId)
+        const currentTodo = todos.find((todo) => todo.status === 'in_progress')
+        if (currentTodo) prepared.messages.push({ role: 'system', content: `الخطوة الحالية من خطة العمل التي تعمل عليها الآن: ${currentTodo.content}` })
         const contextMs = Date.now() - stepStartedAt
         const estimatedTokens = prepared.estimatedTokens
         this.emit({ sessionId, runId: run.runId, type: 'context', context: { estimatedTokens, compacted: prepared.compacted, contextWindow: config.contextWindow } })
@@ -301,11 +304,11 @@ export class AgentRunner {
         const content = candidates.flat().map(summaryLine).join('\n').slice(0, 100_000)
         try {
           const compactReply = await this.modelRequest(config, [
-            { role: 'system', content: 'لخص سجل وكيل برمجي بدقة شديدة. احتفظ بالهدف والقيود والقرارات والملفات المعدلة ونتائج الاختبارات والأخطاء والخطوة التالية. لا تخترع معلومات. اكتب بالعربية.' },
+            { role: 'system', content: 'لخص سجل وكيل برمجي بدقة شديدة كملخص JSON منظم. أعد:\n{\n  "goal": "الهدف الأساسي",\n  "decisions": ["قرار1", "قرار2"],\n  "filesModified": ["file1", "file2"],\n  "errors": ["خطأ1"],\n  "nextStep": "الخطوة التالية"\n}\nاحتفظ بالأدلة الواقعية فقط. لا تخترع معلومات. اكتب بالعربية.' },
             { role: 'user', content: `${summary.text ? `الملخص السابق:\n${summary.text}\n\n` : ''}السجل الجديد:\n${content}` }
-          ], [], { signal, deadlineAt, concurrencyKey: `session:${session.id}`, timeoutMs: 60_000, retries: 0, maxOutputTokens: 2048 })
+          ], [], { signal, deadlineAt, concurrencyKey: `session:${session.id}`, timeoutMs: 60_000, retries: 0, maxOutputTokens: 4096 })
           const activeRun = this.runs.get(session.id)
-          if (activeRun?.runId === runId) this.recordUsage(session.id, activeRun, config, compactReply.usage, estimateModelRequestTokens(config, [{ role: 'user', content }], [], 2048), 'compaction')
+          if (activeRun?.runId === runId) this.recordUsage(session.id, activeRun, config, compactReply.usage, estimateModelRequestTokens(config, [{ role: 'user', content }], [], 4096), 'compaction')
           if (compactReply.finishReason === 'stop' && compactReply.text.trim() && this.db.setSummary(session.id, compactReply.text, cut, summary.throughSequence)) { summary = { text: compactReply.text, throughSequence: cut }; compacted = true }
         } catch (error) {
           if (signal.aborted) throw error
