@@ -1127,6 +1127,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    Tool cards (premium)
    ============================================================ */
 .tool-list { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+.execution-timeline .tool-list { margin-top: 8px; gap: 3px; }
+.tool-card-compact .tool-head { min-height: 38px; padding: 7px 10px; gap: 9px; }
+.tool-card-compact .tool-icon { width: 23px; height: 23px; border-radius: 6px; flex-basis: 23px; }
+.tool-card-compact .tool-info b { font-size: 10.5px; }
+.tool-card-compact .tool-info .tool-meta-row { margin-top: 1px; }
+.tool-card-compact .tool-info small { font-size: 9px; }
+.tool-card-compact .tool-tag { font-size: 8px; }
 .tool-card {
   border: 1px solid var(--border);
   border-radius: 11px;
