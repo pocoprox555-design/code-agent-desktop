@@ -1392,6 +1392,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .execution-head > svg.rot { transform: rotate(180deg); }
 
 .execution-body { padding: 4px 16px 14px; border-top: 1px solid var(--border); position: relative; }
+.execution-step.completed:not(.details-open) .execution-body { display: none; }
+.execution-collapsed-note { padding: 0 16px 10px; color: var(--text-3); font-size: 10px; text-align: right; }
 .execution-body::before {
   content: '';
   position: absolute;

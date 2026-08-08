@@ -419,7 +419,36 @@ function SubagentRow({ item }: { item: SubagentEvent }) {
   </div>
 }
 
-function ExecutionStage({ messages }: { messages: Message[] }) { const [open, setOpen] = useState(false); const tools = messages.flatMap((message) => message.toolCalls ?? []); const running = tools.some((tool) => tool.status === 'running'); const failed = tools.some((tool) => tool.status === 'error' || tool.status === 'denied'); const completed = tools.filter((tool) => tool.status === 'completed').length; const names = [...new Set(tools.map((tool) => tool.name.replaceAll('_', ' ')))]; const progress = tools.length ? Math.round((completed / tools.length) * 100) : 0; return <section className={`execution-step ${running ? 'running' : failed ? 'failed' : 'completed'}`}><button className="execution-head" onClick={() => setOpen(!open)} aria-expanded={open}><span className="execution-mark">{running ? <LoaderCircle className="spin" size={16}/> : failed ? <XCircle size={16}/> : <CheckCircle2 size={16}/>}</span><span><strong>{running ? 'قيد التنفيذ الآن' : failed ? 'تحتاج مراجعة' : 'اكتملت بنجاح'}</strong><small><span className="exec-counter">{tools.length.toLocaleString('ar')} عملية</span><span>{names.join(' · ')}</span></small></span><ChevronDown className={open ? 'rot' : ''} size={14}/></button>{running && <div className="execution-progress"><div className="execution-progress-bar" style={{ width: `${progress}%` }}/></div>}{open && <div className="execution-body">{messages.map((message) => <div className="execution-round" key={message.id}>{message.content && <p>{message.content}</p>}<div className="tool-list">{message.toolCalls?.map((tool) => <ToolCard key={tool.id} tool={tool}/>)}</div></div>)}</div>}</section> }
+function ExecutionStage({ messages }: { messages: Message[] }) {
+  const [open, setOpen] = useState(false)
+  const tools = messages.flatMap((message) => message.toolCalls ?? [])
+  const running = tools.some((tool) => tool.status === 'running')
+  const failed = tools.some((tool) => tool.status === 'error' || tool.status === 'denied')
+  const completed = tools.filter((tool) => tool.status === 'completed').length
+  const visibleTools = open ? tools : tools.filter((tool) => tool.status === 'running' || tool.status === 'error' || tool.status === 'denied')
+  const visibleIds = new Set(visibleTools.map((tool) => tool.id))
+  const progress = tools.length ? Math.round((completed / tools.length) * 100) : 0
+  useEffect(() => { setOpen(running || failed) }, [running, failed])
+  return <section className={`execution-step ${running ? 'running' : failed ? 'failed' : 'completed'} ${open ? 'details-open' : ''}`}>
+    <button className="execution-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+      <span className="execution-mark">{running ? <LoaderCircle className="spin" size={16}/> : failed ? <XCircle size={16}/> : <CheckCircle2 size={16}/>}</span>
+      <span><strong>{running ? 'قيد التنفيذ الآن' : failed ? 'تحتاج مراجعة' : 'اكتملت'}</strong><small><span className="exec-counter">{tools.length.toLocaleString('ar')} عملية</span><span>{executionSummary(tools)}</span></small></span>
+      <ChevronDown className={open ? 'rot' : ''} size={14}/>
+    </button>
+    {running && <div className="execution-progress"><div className="execution-progress-bar" style={{ width: `${progress}%` }}/></div>}
+    {!open && !running && !failed && tools.length > 0 && <div className="execution-collapsed-note">اكتمل التنفيذ · اضغط لعرض سجل الأدوات</div>}
+    {open && <div className="execution-body">{messages.map((message) => { const messageTools = message.toolCalls?.filter((tool) => visibleIds.has(tool.id)); return messageTools?.length || message.content ? <div className="execution-round" key={message.id}>{message.content && <p>{message.content}</p>}<div className="tool-list">{messageTools?.map((tool) => <ToolCard key={tool.id} tool={tool}/>)}</div></div> : null })}</div>}
+  </section>
+}
+
+function executionSummary(tools: NonNullable<Message['toolCalls']>): string {
+  const reads = tools.filter((tool) => ['read_file', 'read_files', 'list_directory', 'tree', 'glob_files', 'get_file_info'].includes(tool.name)).length
+  const changes = tools.filter((tool) => ['write_file', 'edit_file', 'append_file', 'delete_file', 'move_file'].includes(tool.name)).length
+  const parts = [`${tools.filter((tool) => tool.status === 'completed').length.toLocaleString('ar')} مكتملة`]
+  if (reads) parts.push(`${reads.toLocaleString('ar')} قراءة`)
+  if (changes) parts.push(`${changes.toLocaleString('ar')} تعديل`)
+  return parts.join(' · ')
+}
 function CodeBlock({ language, code }: { language: string; code: string }) { const [copied, setCopied] = useState(false); async function copy() { try { await window.rCode.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch {} } return <div className="code-block" dir="ltr"><div className="code-head"><span><span className="code-lang-dot"/>{language}</span><button aria-label="نسخ الكود" onClick={() => void copy()}>{copied ? <Check size={12}/> : <Copy size={12}/>} {copied ? 'تم النسخ' : 'نسخ'}</button></div><pre><code>{code}</code></pre></div> }
   function ToolCard({ tool }: { tool: NonNullable<Message['toolCalls']>[number] }) { const [open, setOpen] = useState(false); const target = String(tool.input.path ?? tool.input.command ?? ''); const statusLabel: Record<string, string> = { running: 'قيد التنفيذ', completed: 'تم', error: 'فشل', denied: 'مرفوض' }; return <div className={`tool-card ${tool.status}`}><button className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}><span className="tool-icon">{tool.status === 'running' ? <LoaderCircle className="spin" size={14}/> : tool.status === 'completed' ? <CheckCircle2 size={14}/> : <XCircle size={14}/>}</span><span className="tool-info"><b>{tool.name.replaceAll('_', ' ')}</b><div className="tool-meta-row">{target && <small dir="ltr">{target}</small>}<span className="tool-tag">{statusLabel[tool.status] ?? tool.status}</span></div></span><ChevronDown className={open ? 'rot' : ''} size={13}/></button>{open && <div className="tool-body"><strong>المدخلات</strong><pre>{JSON.stringify(tool.input, null, 2)}</pre>{tool.output !== undefined && <><strong>النتيجة</strong>{tool.name === 'run_powershell' ? <AnsiOutput value={tool.output}/> : <DiffOrText name={tool.name} value={tool.output}/>}</>}</div>}</div> }
 
