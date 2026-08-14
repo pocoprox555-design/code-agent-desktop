@@ -1,19 +1,19 @@
 import type { ProviderConfig } from '../shared/types'
 import type { ModelUsage } from '../shared/types'
-import { countTokens } from 'gpt-tokenizer'
 import { apiPathFor, GO_BASE_URL } from '../shared/models'
 
 export type FinishReason = 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'cancelled' | 'error' | 'unknown'
 export interface ModelToolCall { id: string; name: string; arguments: string }
 export interface ModelReply { text: string; reasoning?: string; toolCalls: ModelToolCall[]; finishReason: FinishReason; usage?: ModelUsage; providerPayload?: unknown[] }
-export interface ModelInput { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | Array<Record<string, unknown>>; tool_call_id?: string; name?: string; tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>; providerPayload?: unknown[]; messageId?: string }
+export interface ModelInput { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | Array<Record<string, unknown>>; tool_call_id?: string; name?: string; tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>; providerPayload?: unknown[]; messageId?: string; cacheAnchor?: boolean }
 export interface ToolDefinition { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }
-export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number; retries?: number; maxOutputTokens?: number; maxResponseBytes?: number; onTextDelta?: (delta: string) => void; onReasoningDelta?: (delta: string) => void; deadlineAt?: number; concurrencyKey?: string; onRetry?: (attempt: number, delayMs: number) => void; onResponseStarted?: () => void }
+export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number; retries?: number; maxOutputTokens?: number; maxResponseBytes?: number; onTextDelta?: (delta: string) => void; onReasoningDelta?: (delta: string) => void; onToolCallStart?: (id: string, name: string) => void; onToolCallDelta?: (id: string, delta: string) => void; onToolCallDone?: (id: string, name: string, args: string) => void; deadlineAt?: number; concurrencyKey?: string; onRetry?: (attempt: number, delayMs: number) => void; onResponseStarted?: () => void }
 export class ContextOverflowError extends Error {}
 export class DeadlineExceededError extends Error {}
 export class ProviderTimeoutError extends Error {}
 export class ProviderResponseTooLargeError extends Error {}
 
+// تحسين إدارة الطلبات المتزامنة لتقليل استهلاك الموارد
 const MAX_CONCURRENT_MODEL_REQUESTS = 4
 const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 interface RequestSlotEntry { signal?: AbortSignal; deadlineAt?: number; resolve(): void; reject(error: Error): void; abort(): void; timer?: NodeJS.Timeout; settled: boolean }
@@ -50,7 +50,19 @@ export async function requestModel(config: ProviderConfig, messages: ModelInput[
 export function estimateModelRequestTokens(_config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], _maxOutputTokens?: number): number {
   let total = 0
   for (const message of messages) {
-    const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+    let content: string
+    if (typeof message.content === 'string') {
+      content = message.content
+    } else {
+      // الصور/الفيديو تُحاسب بالتوكن ككتلة بصرية (~1200) لا بحجم base64 النصي —
+      // وإلا تفجّر التقدير وضُغط السياق مبكرًا عند حقن لقطات المعاينة.
+      let mediaBlocks = 0
+      for (const block of message.content) {
+        if (block && typeof block === 'object' && (block.type === 'image' || block.type === 'video')) mediaBlocks++
+      }
+      total += mediaBlocks * 1_200
+      content = JSON.stringify(message.content, (_key, value) => typeof value === 'string' && value.length > 4_096 ? '[media-data]' : value)
+    }
     total += estimateSerializedTokens(content) + 30
     if (message.tool_calls) {
       for (const call of message.tool_calls) {
@@ -63,12 +75,25 @@ export function estimateModelRequestTokens(_config: ProviderConfig, messages: Mo
 }
 
 function estimateSerializedTokens(value: string): number {
-  try { return Math.max(1, countTokens(value)) }
-  catch {
-    let ascii = 0; let nonAscii = 0
-    for (let index = 0; index < value.length; index++) { if (value.charCodeAt(index) < 128) ascii++; else nonAscii++ }
-    return Math.ceil(ascii / 3.8 + nonAscii / 1.8)
-  }
+  // Provider tokenizers differ by model and API style. Use a deliberately
+  // conservative UTF-8 estimate instead of treating one tokenizer as truth.
+  // Cached by content hash: history and system content repeat across rounds,
+  // so re-hashing replaces re-serializing/re-measuring every step.
+  const key = `${value.length}:${(djb2(value) >>> 0).toString(36)}`
+  const cached = estimateTokenCache.get(key)
+  if (cached !== undefined) { estimateTokenCache.delete(key); estimateTokenCache.set(key, cached); return cached }
+  const tokens = Math.max(1, Math.ceil(Buffer.byteLength(value, 'utf8') / 2.5))
+  if (estimateTokenCache.size >= ESTIMATE_TOKEN_CACHE_MAX) estimateTokenCache.delete(estimateTokenCache.keys().next().value!)
+  estimateTokenCache.set(key, tokens)
+  return tokens
+}
+
+const estimateTokenCache = new Map<string, number>()
+const ESTIMATE_TOKEN_CACHE_MAX = 1_000
+function djb2(value: string): number {
+  let hash = 5381
+  for (let index = 0; index < value.length; index++) hash = ((hash << 5) + hash + value.charCodeAt(index)) | 0
+  return hash
 }
 
 function acquireModelRequestSlot(key: string, signal?: AbortSignal, deadlineAt?: number): Promise<void> {
@@ -105,6 +130,23 @@ function releaseModelRequestSlot(key: string): void {
   if (state.active === 0 && state.queue.length === 0) requestSlots.delete(key)
 }
 
+/** إلغاء جميع طلبات المزود المعلقة التي تطابق بادئة مفتاح — تستخدم عند إيقاف جلسة */
+export function cancelProviderRequestSlots(keyPrefix: string): void {
+  for (const [key, state] of requestSlots) {
+    if (key.startsWith(keyPrefix)) {
+      for (const entry of [...state.queue]) {
+        if (!entry.settled) {
+          entry.settled = true
+          if (entry.timer) clearTimeout(entry.timer)
+          entry.signal?.removeEventListener('abort', entry.abort)
+          entry.reject(new DOMException('تم إلغاء جلسة المزود', 'AbortError'))
+        }
+      }
+      state.queue.length = 0
+    }
+  }
+}
+
 async function requestOnce(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], options: RequestOptions): Promise<ModelReply> {
   const apiStyle = config.apiStyle
   const url = new URL(apiPathFor(apiStyle), GO_BASE_URL).toString()
@@ -139,7 +181,7 @@ async function requestOnce(config: ProviderConfig, messages: ModelInput[], tools
         } else throw new ProviderHttpError(response.status, parseRetryAfter(response.headers.get('retry-after-ms'), response.headers.get('retry-after')), `فشل المزود (${response.status}): ${raw.slice(0, 1000)}`)
       }
       options.onResponseStarted?.()
-      if (options.onTextDelta) return parseEventStream(response, apiStyle, options.onTextDelta, maxResponseBytes, options.onReasoningDelta)
+      if (options.onTextDelta) return parseEventStream(response, apiStyle, options.onTextDelta, maxResponseBytes, options.onReasoningDelta, options.onToolCallStart, options.onToolCallDelta, options.onToolCallDone, options.signal)
      const raw = await readBoundedBody(response, maxResponseBytes)
     let data: Record<string, any>
     try { data = JSON.parse(raw) as Record<string, any> } catch { throw new Error('أعاد المزود JSON غير صالح') }
@@ -179,11 +221,16 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
   } finally {
     try { await reader.cancel() } catch {}
     reader.releaseLock()
+    // تحسين تنظيف الموارد: التأكد من تحرير جميع الموارد
+    chunks.length = 0
   }
 }
 
-async function parseEventStream(response: Response, style: 'chat' | 'responses' | 'anthropic', onTextDelta: (delta: string) => void, maxBytes: number, onReasoningDelta?: (delta: string) => void): Promise<ModelReply> {
+async function parseEventStream(response: Response, style: 'chat' | 'responses' | 'anthropic', onTextDelta: (delta: string) => void, maxBytes: number, onReasoningDelta?: (delta: string) => void, onToolCallStart?: (id: string, name: string) => void, onToolCallDelta?: (id: string, delta: string) => void, onToolCallDone?: (id: string, name: string, args: string) => void, signal?: AbortSignal): Promise<ModelReply> {
   if (!response.body) throw new Error('المزود لا يدعم بث الاستجابة')
+  // ─── إلغاء فوري عند إطلاق الإشارة ───
+  // بدون هذا، توقف الإلغاء يستمر في القراءة من البث لأن reader.read() لا يعرف أن يجب أن يتوقف.
+  if (signal?.aborted) { try { await response.body.cancel() } catch {} throw new DOMException('تم إلغاء طلب المزود', 'AbortError') }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -193,51 +240,83 @@ async function parseEventStream(response: Response, style: 'chat' | 'responses' 
   const state = makeStreamState()
   let bytes = 0
   const flush = (): void => { if (dataLines.length) events.push({ event: eventName, data: dataLines.join('\n') }); eventName = 'message'; dataLines = [] }
-  try { while (true) {
-    const part = await reader.read()
-    bytes += part.value?.byteLength ?? 0
-    if (bytes > maxBytes) throw new ProviderResponseTooLargeError(`بث المزود أكبر من الحد (${maxBytes} بايت)`)
-    buffer += decoder.decode(part.value ?? new Uint8Array(), { stream: !part.done })
-    const lines = buffer.split(/\r?\n/)
-    buffer = part.done ? '' : lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line) { flush(); continue }
-      if (line.startsWith('event:')) eventName = line.slice(6).trim()
-      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+  // ─── فحص الإلغاء في كل مرحلة: قبل القراءة + بعد القراءة + أثناء المعالجة ───
+    // هذا يضمن التوقف الفوري عند الإلغاء وليس بعد اكتمال Chunk التالي.
+    const checkAbort = (): void => {
+      if (signal?.aborted) { try { reader.cancel() } catch {} throw new DOMException('تم إلغاء طلب المزود', 'AbortError') }
     }
-    while (events.length) {
-      const item = events.shift()!
-      if (item.data === '[DONE]') continue
-      let data: any
-      try { data = JSON.parse(item.data) } catch { continue }
-      consumeStreamEvent(style, item.event, data, state, onTextDelta, onReasoningDelta)
+    try { while (true) {
+      checkAbort()
+      const part = await reader.read()
+      checkAbort()
+      bytes += part.value?.byteLength ?? 0
+      if (bytes > maxBytes) throw new ProviderResponseTooLargeError(`بث المزود أكبر من الحد (${maxBytes} بايت)`)
+      buffer += decoder.decode(part.value ?? new Uint8Array(), { stream: !part.done })
+      const lines = buffer.split(/\r?\n/)
+      buffer = part.done ? '' : lines.pop() ?? ''
+      for (const line of lines) {
+        checkAbort()
+        if (!line) { flush(); continue }
+        if (line.startsWith('event:')) eventName = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+      }
+      while (events.length) {
+        checkAbort()
+        const item = events.shift()!
+        if (item.data === '[DONE]') continue
+        let data: any
+        try { data = JSON.parse(item.data) } catch { continue }
+        consumeStreamEvent(style, item.event, data, state, onTextDelta, onReasoningDelta, onToolCallStart, onToolCallDelta, onToolCallDone)
+      }
+      if (part.done) { flush(); break }
+    } } finally { 
+      try { await reader.cancel() } catch {}; 
+      reader.releaseLock();
+      // تحسين تنظيف الموارد: التأكد من تحرير جميع الموارد
+      events.length = 0;
+      dataLines.length = 0;
+      buffer = '';
     }
-    if (part.done) { flush(); break }
-  } } finally { try { await reader.cancel() } catch {}; reader.releaseLock() }
-  while (events.length) { const item = events.shift()!; if (item.data !== '[DONE]') { try { consumeStreamEvent(style, item.event, JSON.parse(item.data), state, onTextDelta, onReasoningDelta) } catch {} } }
+  while (events.length) { const item = events.shift()!; if (item.data !== '[DONE]') { try { consumeStreamEvent(style, item.event, JSON.parse(item.data), state, onTextDelta, onReasoningDelta, onToolCallStart, onToolCallDelta, onToolCallDone) } catch {} } }
   return finishStream(style, state)
 }
 
-interface StreamState { text: string; reasoning: string; finishReason: FinishReason; usage?: ModelUsage; chatCalls: Map<number, { id: string; name: string; arguments: string }>; anthropicCalls: Map<number, { id: string; name: string; arguments: string }>; responseCalls: Map<string, { id: string; name: string; arguments: string }>; responseOutput: unknown[] }
-function makeStreamState(): StreamState { return { text: '', reasoning: '', finishReason: 'unknown', chatCalls: new Map(), anthropicCalls: new Map(), responseCalls: new Map(), responseOutput: [] } }
+interface StreamState { text: string; reasoning: string; finishReason: FinishReason; usage?: ModelUsage; chatCalls: Map<number, { id: string; name: string; arguments: string }>; anthropicCalls: Map<number, { id: string; name: string; arguments: string }>; responseCalls: Map<string, { id: string; name: string; arguments: string }>; responseOutput: unknown[]; startedCalls: Set<string>; completedCalls: Set<string> }
+function makeStreamState(): StreamState { return { text: '', reasoning: '', finishReason: 'unknown', chatCalls: new Map(), anthropicCalls: new Map(), responseCalls: new Map(), responseOutput: [], startedCalls: new Set(), completedCalls: new Set() } }
 
-function consumeStreamEvent(style: 'chat' | 'responses' | 'anthropic', event: string, data: any, state: StreamState, onTextDelta: (delta: string) => void, onReasoningDelta?: (delta: string) => void): void {
+function consumeStreamEvent(style: 'chat' | 'responses' | 'anthropic', event: string, data: any, state: StreamState, onTextDelta: (delta: string) => void, onReasoningDelta?: (delta: string) => void, onToolCallStart?: (id: string, name: string) => void, onToolCallDelta?: (id: string, args: string) => void, onToolCallDone?: (id: string, name: string, args: string) => void): void {
   if (style === 'chat') {
     const choice = data.choices?.[0]
     const delta = choice?.delta?.content
     if (typeof delta === 'string' && delta) { state.text += delta; onTextDelta(delta) }
     const reasoningDelta = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning
     if (typeof reasoningDelta === 'string' && reasoningDelta) { state.reasoning += reasoningDelta; onReasoningDelta?.(reasoningDelta) }
-    for (const call of choice?.delta?.tool_calls ?? []) { const index = Number(call.index ?? 0); const current = state.chatCalls.get(index) ?? { id: '', name: '', arguments: '' }; current.id += call.id ?? ''; current.name += call.function?.name ?? ''; current.arguments += call.function?.arguments ?? ''; state.chatCalls.set(index, current) }
-    if (choice?.finish_reason) state.finishReason = mapChatReason(choice.finish_reason)
+    for (const call of choice?.delta?.tool_calls ?? []) { const index = Number(call.index ?? 0); const current = state.chatCalls.get(index) ?? { id: '', name: '', arguments: '' }; current.id += call.id ?? ''; current.name += call.function?.name ?? ''; current.arguments += call.function?.arguments ?? ''; state.chatCalls.set(index, current)
+      notifyToolStart(state, current, onToolCallStart)
+      if (call.function?.arguments) onToolCallDelta?.(current.id, call.function.arguments)
+    }
+    if (choice?.finish_reason) { state.finishReason = mapChatReason(choice.finish_reason); for (const current of state.chatCalls.values()) notifyToolDone(state, current, onToolCallDone) }
      if (data.usage) state.usage = usage(data.usage, 'prompt_tokens', 'completion_tokens')
     return
   }
   if (style === 'anthropic') {
-    if (data.type === 'content_block_start' && data.content_block?.type === 'tool_use') state.anthropicCalls.set(Number(data.index), { id: String(data.content_block.id ?? ''), name: String(data.content_block.name ?? ''), arguments: '' })
+    if (data.type === 'content_block_start' && data.content_block?.type === 'tool_use') {
+      const id = String(data.content_block.id ?? '')
+      const name = String(data.content_block.name ?? '')
+      state.anthropicCalls.set(Number(data.index), { id, name, arguments: '' })
+      notifyToolStart(state, { id, name }, onToolCallStart)
+    }
+    if (data.type === 'content_block_stop') { const current = state.anthropicCalls.get(Number(data.index)); if (current) notifyToolDone(state, current, onToolCallDone) }
     if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') { const delta = String(data.delta.text ?? ''); state.text += delta; onTextDelta(delta) }
     if (data.type === 'content_block_delta' && data.delta?.type === 'thinking_delta') { const delta = String(data.delta.thinking ?? ''); state.reasoning += delta; onReasoningDelta?.(delta) }
-    if (data.type === 'content_block_delta' && data.delta?.type === 'input_json_delta') { const current = state.anthropicCalls.get(Number(data.index)); if (current) current.arguments += String(data.delta.partial_json ?? '') }
+    if (data.type === 'content_block_delta' && data.delta?.type === 'input_json_delta') {
+      const current = state.anthropicCalls.get(Number(data.index))
+      if (current) {
+        const delta = String(data.delta.partial_json ?? '')
+        current.arguments += delta
+        onToolCallDelta?.(current.id, delta)
+      }
+    }
      if (data.type === 'message_start' && data.message?.usage) state.usage = usage(data.message.usage, 'input_tokens', 'output_tokens')
      if (data.type === 'message_delta') { state.finishReason = mapAnthropicReason(data.delta?.stop_reason); if (data.usage) state.usage = mergeUsage(state.usage, usage(data.usage, 'input_tokens', 'output_tokens')) }
     return
@@ -245,13 +324,16 @@ function consumeStreamEvent(style: 'chat' | 'responses' | 'anthropic', event: st
   const type = data.type ?? event
   if (type === 'response.output_text.delta') { const delta = String(data.delta ?? ''); state.text += delta; onTextDelta(delta) }
   if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') { const delta = String(data.delta ?? ''); state.reasoning += delta; onReasoningDelta?.(delta) }
-  if (type === 'response.output_item.added' && data.item?.type === 'function_call') state.responseCalls.set(String(data.item.call_id ?? data.item.id ?? data.output_index), { id: String(data.item.call_id ?? ''), name: String(data.item.name ?? ''), arguments: String(data.item.arguments ?? '') })
-  if (type === 'response.function_call_arguments.delta') { const key = String(data.call_id ?? data.item_id ?? data.output_index); const current = state.responseCalls.get(key); if (current) current.arguments += String(data.delta ?? '') }
-  if (type === 'response.output_item.done' && data.item) { state.responseOutput[Number(data.output_index ?? state.responseOutput.length)] = data.item; if (data.item.type === 'function_call') state.responseCalls.set(String(data.item.call_id ?? data.item.id ?? data.output_index), { id: String(data.item.call_id ?? ''), name: String(data.item.name ?? ''), arguments: String(data.item.arguments ?? '') }) }
+  if (type === 'response.output_item.added' && data.item?.type === 'function_call') { const current = { id: String(data.item.call_id ?? data.item.id ?? ''), name: String(data.item.name ?? ''), arguments: String(data.item.arguments ?? '') }; state.responseCalls.set(String(data.item.call_id ?? data.item.id ?? data.output_index), current); notifyToolStart(state, current, onToolCallStart) }
+  if (type === 'response.function_call_arguments.delta') { const key = String(data.call_id ?? data.item_id ?? data.output_index); const current = state.responseCalls.get(key); if (current) { const delta = String(data.delta ?? ''); current.arguments += delta; notifyToolStart(state, current, onToolCallStart); onToolCallDelta?.(current.id, delta) } }
+  if (type === 'response.output_item.done' && data.item) { state.responseOutput[Number(data.output_index ?? state.responseOutput.length)] = data.item; if (data.item.type === 'function_call') { const key = String(data.item.call_id ?? data.item.id ?? data.output_index); const current = state.responseCalls.get(key) ?? { id: String(data.item.call_id ?? data.item.id ?? ''), name: String(data.item.name ?? ''), arguments: '' }; current.id ||= String(data.item.call_id ?? data.item.id ?? ''); current.name ||= String(data.item.name ?? ''); current.arguments = String(data.item.arguments ?? current.arguments); state.responseCalls.set(key, current); notifyToolStart(state, current, onToolCallStart); notifyToolDone(state, current, onToolCallDone) } }
   if (type === 'response.completed' && data.response) { state.responseOutput = data.response.output ?? state.responseOutput; state.usage = usage(data.response.usage, 'input_tokens', 'output_tokens'); state.finishReason = state.responseCalls.size ? 'tool_calls' : 'stop' }
   if (type === 'response.incomplete') state.finishReason = data.response?.incomplete_details?.reason === 'max_output_tokens' ? 'length' : 'unknown'
   if (type === 'response.failed') state.finishReason = 'error'
 }
+
+function notifyToolStart(state: StreamState, call: { id: string; name: string }, callback?: (id: string, name: string) => void): void { if (!call.id || !call.name || state.startedCalls.has(call.id)) return; state.startedCalls.add(call.id); callback?.(call.id, call.name) }
+function notifyToolDone(state: StreamState, call: { id: string; name: string; arguments: string }, callback?: (id: string, name: string, args: string) => void): void { notifyToolStart(state, call); if (!call.id || !call.name || state.completedCalls.has(call.id)) return; state.completedCalls.add(call.id); callback?.(call.id, call.name, call.arguments) }
 
 function finishStream(style: 'chat' | 'responses' | 'anthropic', state: StreamState): ModelReply {
   const toolCalls = style === 'chat' ? [...state.chatCalls.values()] : style === 'anthropic' ? [...state.anthropicCalls.values()] : [...state.responseCalls.values()]
@@ -262,14 +344,15 @@ function finishStream(style: 'chat' | 'responses' | 'anthropic', state: StreamSt
 }
 
 function toChatBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number, withReasoningControl = true): Record<string, unknown> {
-  return { model: config.model, messages: normalizeChatMessages(messages), ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0, max_tokens: maxOutput, ...(withReasoningControl ? { reasoning_effort: 'low' } : {}) }
+  const reasoningEffort = config.reasoningEffort
+  return { model: config.model, messages: normalizeChatMessages(messages), ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0, max_tokens: maxOutput, ...(withReasoningControl && reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }
 }
 
 function normalizeChatMessages(messages: ModelInput[]): Array<Record<string, unknown>> {
   const normalized: Array<Record<string, unknown>> = []
   let pendingToolCalls: string[] = []
   for (const source of messages) {
-    const { providerPayload: _, messageId: __, ...message } = source
+    const { providerPayload: _, messageId: __, cacheAnchor: ___, ...message } = source
     if (message.role === 'assistant' && message.tool_calls?.length) {
       for (const call of pendingToolCalls) normalized.push({ role: 'tool', tool_call_id: call, content: JSON.stringify({ ok: false, error: { code: 'MISSING_TOOL_RESULT', message: 'لم تُسجّل نتيجة استدعاء الأداة من تشغيل سابق.' } }) })
       pendingToolCalls = message.tool_calls.map((call) => call.id)
@@ -328,7 +411,7 @@ function toResponsesBody(config: ProviderConfig, messages: ModelInput[], tools: 
       for (const call of message.tool_calls ?? []) input.push({ type: 'function_call', call_id: call.id, name: call.function.name, arguments: call.function.arguments })
     }
   }
-  return { model: config.model, input, ...(tools.length ? { tools: tools.map((item) => ({ type: 'function', name: item.function.name, description: item.function.description, parameters: item.function.parameters })) } : {}), max_output_tokens: maxOutput, store: false, ...(withReasoningControl ? { reasoning: { effort: 'low' } } : {}) }
+  return { model: config.model, input, ...(tools.length ? { tools: tools.map((item) => ({ type: 'function', name: item.function.name, description: item.function.description, parameters: item.function.parameters })) } : {}), max_output_tokens: maxOutput, store: false, ...(withReasoningControl && config.reasoningEffort ? { reasoning: { effort: config.reasoningEffort } } : {}) }
 }
 
 function parseResponses(data: Record<string, any>): ModelReply {
@@ -349,7 +432,18 @@ function parseResponses(data: Record<string, any>): ModelReply {
 function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], maxOutput: number, withReasoningControl = true): Record<string, unknown> {
   const systemMessages = messages.filter((message) => message.role === 'system')
   const systemBlocks = systemMessages.map((message) => ({ type: 'text', text: typeof message.content === 'string' ? message.content : message.content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('') } as Record<string, unknown>))
-  if (systemBlocks.length) systemBlocks.at(-1)!.cache_control = { type: 'ephemeral' }
+  // ─── Prompt caching: at most 4 breakpoints, all on stable prefix ends ───
+  // The agent orders system blocks stable-first (combined prompt, memory,
+  // summary) and appends one volatile dynamic block last. cacheAnchor marks
+  // the end of the stable prefix, so the expensive prefix stays cache-warm
+  // even when the dynamic tail changes every round. The old layout spent a
+  // breakpoint on history middle and could emit 5 breakpoints (over the
+  // provider limit), and anchored the last system block even when volatile.
+  if (systemBlocks.length) {
+    let anchor = systemMessages.findIndex((message) => message.cacheAnchor)
+    if (anchor === -1) anchor = 0
+    systemBlocks[anchor]!.cache_control = { type: 'ephemeral' }
+  }
   const toolDefs: Record<string, unknown>[] = tools.length ? tools.map((item) => ({ name: item.function.name, description: item.function.description, input_schema: item.function.parameters } as Record<string, unknown>)) : []
   if (toolDefs.length) toolDefs.at(-1)!.cache_control = { type: 'ephemeral' }
   const output: Array<{ role: 'user' | 'assistant'; content: unknown }> = []
@@ -375,16 +469,14 @@ function toAnthropicBody(config: ProviderConfig, messages: ModelInput[], tools: 
      output.push({ role: message.role as 'user' | 'assistant', content })
   }
   const merged = mergeAnthropicMessages(output)
-  const middleIdx = Math.floor(merged.length / 2)
-  if (merged.length >= 4) {
-    const middleMessage = merged[middleIdx]
-    const middleBlock = middleMessage?.content.at(-1)
-    if (middleBlock && typeof middleBlock === 'object') (middleBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' }
+  // Rolling history breakpoints: end of the previous turn and end of the last
+  // message. Next round, the whole prefix up to either point is cache-readable.
+  for (const index of [merged.length - 2, merged.length - 1]) {
+    const block = merged[index]?.content.at(-1)
+    if (block && typeof block === 'object') (block as Record<string, unknown>).cache_control = { type: 'ephemeral' }
   }
-  const lastMessage = merged.at(-1)
-  const lastBlock = lastMessage?.content.at(-1)
-  if (lastBlock && typeof lastBlock === 'object') (lastBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' }
-  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(toolDefs.length ? { tools: toolDefs } : {}), max_tokens: maxOutput, temperature: 0, ...(withReasoningControl ? { thinking: { type: 'enabled', budget_tokens: 2048 } } : {}) }
+  const thinkingBudget = config.reasoningEffort === 'high' ? 16_384 : config.reasoningEffort === 'medium' ? 8_192 : config.reasoningEffort === 'low' ? 4_096 : undefined
+  return { model: config.model, ...(systemBlocks.length ? { system: systemBlocks } : {}), messages: merged, ...(toolDefs.length ? { tools: toolDefs } : {}), max_tokens: maxOutput, temperature: 0, ...(withReasoningControl && thinkingBudget ? { thinking: { type: 'enabled', budget_tokens: Math.min(thinkingBudget, Math.max(1_024, maxOutput - 1_024)) } } : {}) }
 }
 
 function parseAnthropic(data: Record<string, any>): ModelReply {
