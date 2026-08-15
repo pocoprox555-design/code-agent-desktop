@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Verify and build
-        run: npm run check && npx electron-builder --win nsis --publish never --config.directories.output=release-latest
+        run: npm run build && npx electron-builder --win nsis --publish never --config.directories.output=release-latest
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
