@@ -6,6 +6,13 @@ release-*/
 *.log
 *.tmp/
 .DS_Store
+coverage/
+.nyc_output/
+*.lcov
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
 
 # AI assistant config folders
 .agents/
@@ -23,3 +30,6 @@ debug-shell*.ts
 
 # Build artifacts in root
 /index.js
+.vite/
+.cache/
+.parcel-cache/
