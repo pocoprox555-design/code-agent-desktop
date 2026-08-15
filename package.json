@@ -15,8 +15,8 @@
     "cli": "tsx src/cli.ts",
     "check": "npm run typecheck && npm test && npm run build",
     "preview": "electron-vite preview",
-    "package:win": "npm run check && electron-builder --win portable --config.directories.output=release-latest",
-    "run:win": "npm run build && electron-builder --win portable --config.directories.output=release-latest && taskkill /F /IM \"Code Agent.exe\" /T >nul 2>&1 & start \"\" release-latest\\Code-Agent-0.5.0-portable.exe"
+    "package:win": "npm run check && electron-builder --win nsis --config.directories.output=release-latest",
+    "run:win": "npm run build && electron-builder --win nsis --config.directories.output=release-latest && taskkill /F /IM \"Code Agent.exe\" /T >nul 2>&1 & start \"\" release-latest\\Code-Agent-0.5.0-Setup.exe"
   },
   "build": {
     "appId": "local.r-code-agent.desktop",
@@ -32,13 +32,29 @@
       {
         "from": "resources/templates",
         "to": "templates",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "asar": true,
     "win": {
-      "target": "portable",
-      "artifactName": "Code-Agent-${version}-portable.${ext}"
+      "target": "nsis",
+      "artifactName": "Code-Agent-${version}-Setup.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Code Agent"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "pocoprox555-design",
+      "repo": "code-agent-desktop",
+      "releaseType": "release"
     }
   },
   "dependencies": {
@@ -82,6 +98,7 @@
     "electron": "^43.3.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "openai": "^7.4.0",
     "playwright": "^1.62.1",
     "tsx": "^4.20.0",
     "vite": "^7.0.0"

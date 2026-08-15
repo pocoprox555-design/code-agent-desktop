@@ -1,6 +1,6 @@
 import type { ProviderConfig } from '../shared/types'
 import type { ModelUsage } from '../shared/types'
-import { apiPathFor, GO_BASE_URL } from '../shared/models'
+import { apiPathFor } from '../shared/models'
 
 export type FinishReason = 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'cancelled' | 'error' | 'unknown'
 export interface ModelToolCall { id: string; name: string; arguments: string }
@@ -45,6 +45,41 @@ export async function requestModel(config: ProviderConfig, messages: ModelInput[
     }
   }
   throw lastError
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Custom Provider Retry: 5s → 10s → 15s → 20s → 25s → 30s (max 60s)
+// ═══════════════════════════════════════════════════════════════════════
+const CUSTOM_RETRY_DELAYS = [5_000, 10_000, 15_000, 20_000, 25_000, 30_000]
+const CUSTOM_RETRY_MAX_ELAPSED = 60_000
+
+export async function requestModelWithCustomRetry(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], options: RequestOptions | AbortSignal = {}): Promise<ModelReply> {
+  const normalized = options instanceof AbortSignal ? { signal: options } : options
+  const startTime = Date.now()
+  let lastError: unknown
+  let outputStarted = false
+  const requestOptions: RequestOptions = normalized.onTextDelta ? { ...normalized, onTextDelta: (delta: string) => { outputStarted = true; normalized.onTextDelta?.(delta) } } : normalized
+  const key = normalized.concurrencyKey ?? 'global'
+
+  for (let attempt = 0; attempt < CUSTOM_RETRY_DELAYS.length; attempt++) {
+    const elapsed = Date.now() - startTime
+    if (elapsed >= CUSTOM_RETRY_MAX_ELAPSED) break
+    try {
+      assertDeadline(normalized.deadlineAt)
+      await acquireModelRequestSlot(key, normalized.signal, normalized.deadlineAt)
+      try { return await requestOnce(config, messages, tools, requestOptions) }
+      finally { releaseModelRequestSlot(key) }
+    } catch (error) {
+      lastError = error
+      if (normalized.signal?.aborted || outputStarted || !retryable(error)) throw friendlyProviderError(error)
+      const remaining = normalized.deadlineAt === undefined ? Number.POSITIVE_INFINITY : normalized.deadlineAt - Date.now()
+      if (remaining <= 1_000) throw new DeadlineExceededError('انتهى الوقت المتاح لطلب المزود')
+      const delayMs = Math.min(CUSTOM_RETRY_DELAYS[attempt] ?? 30_000, CUSTOM_RETRY_MAX_ELAPSED - elapsed, remaining - 1_000)
+      normalized.onRetry?.(attempt + 1, delayMs)
+      await delay(delayMs, normalized.signal, normalized.deadlineAt)
+    }
+  }
+  throw friendlyProviderError(lastError)
 }
 
 export function estimateModelRequestTokens(_config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], _maxOutputTokens?: number): number {
@@ -147,9 +182,9 @@ export function cancelProviderRequestSlots(keyPrefix: string): void {
   }
 }
 
-async function requestOnce(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], options: RequestOptions): Promise<ModelReply> {
+export async function requestOnce(config: ProviderConfig, messages: ModelInput[], tools: ToolDefinition[], options: RequestOptions): Promise<ModelReply> {
   const apiStyle = config.apiStyle
-  const url = new URL(apiPathFor(apiStyle), GO_BASE_URL).toString()
+  const url = new URL(apiPathFor(apiStyle), config.baseUrl).toString()
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (config.apiKey) {
     if (apiStyle === 'anthropic') { headers['x-api-key'] = config.apiKey; headers['anthropic-version'] = '2023-06-01' }

@@ -7,11 +7,12 @@ import { createHash } from 'node:crypto'
 import type { AgentEvent, ApprovalRequest, Attachment, DevServerState, Message, ModelUsage, MutationReceipt, SessionRunState, SubagentEvent, ToolCallRecord } from '../shared/types'
 import { AppDatabase, type StoredMessage } from './database'
 import { ProviderStore } from './provider-store'
+import { CustomProviderStore } from './custom-provider-store'
 import { TavilyStore } from './tavily-store'
-import { cancelProviderRequestSlots, ContextOverflowError, DeadlineExceededError, estimateModelRequestTokens, ProviderTimeoutError, requestModel, type ModelInput, type ModelToolCall, type ToolDefinition } from './provider'
+import { cancelProviderRequestSlots, ContextOverflowError, DeadlineExceededError, estimateModelRequestTokens, ProviderTimeoutError, requestModel, requestModelWithCustomRetry, type ModelInput, type ModelToolCall, type ToolDefinition } from './provider'
 import { commitAutoChanges, closeAllPersistentShells, closePersistentShell, executeTool, isToolMutating, runPowerShell, toolDefinitions, withAutoCommit, type ToolContext } from './tools'
 import { McpManager } from './mcp'
-import { calculateCost, GO_MODELS, modelSupportsModality } from '../shared/models'
+import { calculateCost, GO_MODELS, modelSupportsModality, apiPathFor } from '../shared/models'
 import type { Session } from '../shared/types'
 import { getProjectIndexer } from './code-intelligence'
 import { ProjectMemory } from './memory'
@@ -62,7 +63,16 @@ export class AgentRunner {
   private previewStates = new Map<string, DevServerState>()
   private checkpointCounters = new Map<string, number>()
 
-  constructor(private db: AppDatabase, private providers: ProviderStore, private getWebContents: () => WebContents | null, private modelRequest: typeof requestModel = requestModel, private mcp = new McpManager(), private channel: string = MAIN_CHAT_PROFILE.eventChannel, private approvalChannel: string = MAIN_CHAT_PROFILE.approvalChannel, private startPreview?: (session: Session, signal?: AbortSignal) => Promise<DevServerState>, private stopPreview?: (session: Session) => Promise<DevServerState>, private previewStatus?: (session: Session) => DevServerState, private tavilyStore?: TavilyStore, profile: AgentProfile = MAIN_CHAT_PROFILE) { this.profile = profile; this.db.repairIncompleteToolCalls(); this.db.markRunningRunsInterrupted() }
+  constructor(private db: AppDatabase, private providers: ProviderStore, private getWebContents: () => WebContents | null, private modelRequest: typeof requestModel = requestModel, private mcp = new McpManager(), private channel: string = MAIN_CHAT_PROFILE.eventChannel, private approvalChannel: string = MAIN_CHAT_PROFILE.approvalChannel, private startPreview?: (session: Session, signal?: AbortSignal) => Promise<DevServerState>, private stopPreview?: (session: Session) => Promise<DevServerState>, private previewStatus?: (session: Session) => DevServerState, private tavilyStore?: TavilyStore, profile: AgentProfile = MAIN_CHAT_PROFILE, private customProviders?: CustomProviderStore) { this.profile = profile; this.db.repairIncompleteToolCalls(); this.db.markRunningRunsInterrupted() }
+
+  // Determine which request function to use based on provider name
+  private getRequestFunction(config: { name: string }): typeof requestModel {
+    // Custom providers use special retry logic (5s → 10s → 15s → ... → 60s)
+    if (config.name.startsWith('custom:') || (config.name !== 'OpenCode Go' && config.name !== 'test')) {
+      return requestModelWithCustomRetry
+    }
+    return this.modelRequest
+  }
 
   private getMemory(workspace: string): ProjectMemory {
     let memory = this.memories.get(workspace)
@@ -151,7 +161,27 @@ export class AgentRunner {
     }
 
     let config = this.providers.get()
-    if (modelOverride && modelOverride !== config.model) config = this.providers.getForModel(modelOverride)
+    if (modelOverride && modelOverride !== config.model) {
+      if (modelOverride.startsWith('custom:')) {
+        // نموذج مخصص: الصيغة custom:{providerId}:{modelId}
+        const parts = modelOverride.split(':')
+        if (parts.length !== 3 || !parts[1] || !parts[2] || !this.customProviders) throw new Error('النموذج المحدد غير معروف')
+        const resolved = this.customProviders.getConfig(parts[1], parts[2])
+        if (!resolved) throw new Error('النموذج المحدد غير معروف')
+        config = {
+          name: `custom:${parts[1]}`,
+          baseUrl: resolved.baseUrl,
+          apiPath: apiPathFor(resolved.apiStyle),
+          apiStyle: resolved.apiStyle,
+          model: resolved.model,
+          contextWindow: resolved.contextWindow,
+          maxOutputTokens: resolved.maxOutputTokens,
+          apiKey: resolved.apiKey,
+        }
+      } else {
+        config = this.providers.getForModel(modelOverride)
+      }
+    }
     if (!config.apiKey) throw new Error('أضف مفتاح API من الإعدادات أولًا')
     if (attachments?.length) {
       const unsupported = attachments.find((attachment) => attachment.mimeType.startsWith('image/') ? !modelSupportsModality(config.model, 'image') : attachment.mimeType.startsWith('video/') ? !modelSupportsModality(config.model, 'video') : false)
@@ -300,7 +330,7 @@ ${subagentList}
             // completed in final processing below
           }
           try {
-            reply = await this.modelRequest(config, prepared.messages, availableTools, { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 2, maxOutputTokens: prepared.maxOutputTokens, onTextDelta: emitDelta, onReasoningDelta: emitReasoningDelta, onToolCallStart: emitToolCallStart, onToolCallDelta: emitToolCallDelta, onToolCallDone: emitToolCallDone })
+            reply = await this.getRequestFunction(config)(config, prepared.messages, availableTools, { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 2, maxOutputTokens: prepared.maxOutputTokens, onTextDelta: emitDelta, onReasoningDelta: emitReasoningDelta, onToolCallStart: emitToolCallStart, onToolCallDelta: emitToolCallDelta, onToolCallDone: emitToolCallDone })
             this.recordUsage(sessionId, run, config, reply.usage, estimatedTokens, 'agent', streamId)
           } catch (error) {
             if (!(error instanceof ContextOverflowError)) throw error
@@ -319,7 +349,7 @@ ${subagentList}
             const newStreamId = randomUUID()
             this.emit({ sessionId, runId: run.runId, type: 'stream', stream: { id: newStreamId, delta: '', state: 'start' } })
             try {
-              reply = await this.modelRequest(config, recovered, availableTools, { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 0, maxOutputTokens: prepared.maxOutputTokens, onTextDelta: (delta) => { streamed = true; this.emit({ sessionId, runId: run.runId, type: 'stream', stream: { id: newStreamId, delta, state: 'delta' } }) }, onReasoningDelta: (delta) => { this.emit({ sessionId, runId: run.runId, type: 'stream', stream: { id: newStreamId, delta, state: 'delta', reasoning: true } }) } })
+              reply = await this.getRequestFunction(config)(config, recovered, availableTools, { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 0, maxOutputTokens: prepared.maxOutputTokens, onTextDelta: (delta) => { streamed = true; this.emit({ sessionId, runId: run.runId, type: 'stream', stream: { id: newStreamId, delta, state: 'delta' } }) }, onReasoningDelta: (delta) => { this.emit({ sessionId, runId: run.runId, type: 'stream', stream: { id: newStreamId, delta, state: 'delta', reasoning: true } }) } })
               this.recordUsage(sessionId, run, config, reply.usage, estimateModelRequestTokens(config, recovered, availableTools, prepared.maxOutputTokens), 'overflow-recovery', newStreamId)
             } finally {
               this.emit({ sessionId, runId: run.runId, type: 'stream', stream: { id: newStreamId, delta: '', state: 'done' } })
@@ -348,7 +378,7 @@ ${subagentList}
                 continuationContext.push(...compressedContext)
               }
               const continuationOutputTokens = Math.min(config.maxOutputTokens, Math.max(prepared.maxOutputTokens, Math.floor(config.contextWindow * 0.25)))
-              const next = await this.modelRequest(config, continuationContext, [], { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 2, maxOutputTokens: continuationOutputTokens, onTextDelta: emitDelta })
+              const next = await this.getRequestFunction(config)(config, continuationContext, [], { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 2, maxOutputTokens: continuationOutputTokens, onTextDelta: emitDelta })
               this.recordUsage(sessionId, run, config, next.usage, estimateModelRequestTokens(config, continuationContext, [], continuationOutputTokens), 'continuation', streamId)
               combinedUsage = mergeUsage(combinedUsage, next.usage)
               if (!next.text.trim() || next.text === reply.text || combinedText.endsWith(next.text)) { reply = { ...next, text: combinedText, finishReason: 'stop', providerPayload: undefined, usage: combinedUsage }; break }
@@ -370,7 +400,7 @@ ${subagentList}
           // استجابة فارغة: محاولة واحدة إضافية مع تنبيه صريح بدل إفشال التشغيل
           if (!reply.text.trim()) {
             const retryMessages: ModelInput[] = [...prepared.messages, { role: 'user', content: 'Your previous reply was empty. Provide your complete answer now, without tool calls.' }]
-            const retried = await this.modelRequest(config, retryMessages, [], { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 1, maxOutputTokens: prepared.maxOutputTokens })
+            const retried = await this.getRequestFunction(config)(config, retryMessages, [], { signal: controller.signal, deadlineAt: run.deadlineAt, concurrencyKey: `session:${sessionId}`, timeoutMs: 180_000, retries: 1, maxOutputTokens: prepared.maxOutputTokens })
             this.recordUsage(sessionId, run, config, retried.usage, estimateModelRequestTokens(config, retryMessages, [], prepared.maxOutputTokens), 'continuation', streamId)
             if (retried.text.trim()) reply = { ...retried, toolCalls: [] }
           }
@@ -457,17 +487,10 @@ ${subagentList}
         const invalidCalls = validations.flatMap((validation, index) => validation.ok ? [] : [{ call: reply.toolCalls[index]!, error: validation.error }])
         if (this.profile.dedicatedBuild && invalidCalls.length) {
           invalidToolInputRetries++
-          const correction = invalidCalls.map(({ call, error }) => {
-            const definition = availableTools.find((tool) => tool.function.name === call.name)
-            const requiredValue = definition?.function.parameters.required
-            const required = Array.isArray(requiredValue) ? requiredValue.filter((value): value is string => typeof value === 'string') : []
-            let sentFields = 'JSON غير صالح'
-            try { const parsed = JSON.parse(call.arguments); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) sentFields = Object.keys(parsed).join(', ') || 'لا توجد' } catch {}
-            return `- ${call.name}: ${error}. الحقول المطلوبة: ${required.join(', ') || 'لا توجد'}. الحقول المرسلة: ${sentFields}`
-          }).join('\n')
+          const correction = invalidCalls.map(({ call, error }) => formatInvalidToolCorrection(call, error, availableTools.find((tool) => tool.function.name === call.name))).join('\n\n')
           this.emit({ sessionId, runId: run.runId, type: 'stream', stream: { id: streamId, delta: '', state: 'discard' } })
           if (invalidToolInputRetries >= 3) throw new Error(`تعذر على النموذج تصحيح مدخلات الأدوات بعد 3 محاولات داخلية.\n${correction}`)
-          this.db.addMessage({ sessionId, role: 'system', content: `رفض النظام استدعاءات أدوات ناقصة قبل تنفيذها:\n${correction}\n\nأعد استدعاء الأدوات الصحيحة مباشرة في الجولة التالية. لا تكتب اعتذارًا أو وعدًا بأنك سترسل المحتوى لاحقًا. بالنسبة إلى write_file وappend_file يجب أن يحتوي نفس الاستدعاء على content كنص فعلي كامل. contentReceipt بيانات عرض داخلية وليست مدخل أداة صالحًا؛ لا تنشئها ولا ترسلها. مثال البنية الصحيحة: {"path":"src/file.ts","content":"النص الفعلي الكامل"}. لا تكرر المدخل نفسه.` })
+          this.db.addMessage({ sessionId, role: 'system', content: `رفض النظام استدعاء الأداة قبل تنفيذه لأن بنيته غير صحيحة. صحح الاستدعاء اعتمادًا على التفاصيل التالية، ثم أعد استدعاء الأداة مباشرة في الجولة التالية:\n\n${correction}\n\nلا تكتب اعتذارًا أو وعدًا للمستخدم، ولا تكرر JSON السابق. أرسل JSON مطابقًا للعقد المطلوب فقط. إذا كانت الأداة تكتب ملفًا، أرسل المحتوى الفعلي الكامل في نفس الاستدعاء، وليس contentReceipt؛ contentReceipt بيانات عرض داخلية وليست مدخل أداة صالحًا.` })
           this.setStatus(sessionId, 'صحح النظام مدخل أداة ناقص قبل التنفيذ...', run)
           continue
         }
@@ -514,7 +537,8 @@ ${subagentList}
 
         const deferredCommits: Array<{ action: string; paths: string[] }> = []
         const toolContext: ToolContext = { session: this.db.getSession(sessionId), signal: controller.signal, deadlineAt: run.deadlineAt, maxOutputChars: Math.min(1_500_000, Math.max(120_000, Math.floor(config.contextWindow * 1.2))), mcp: this.mcp, trackProcess: (child) => { run.childProcesses.add(child); child.once('close', () => run.childProcesses.delete(child)) }, approve: (title, detail, critical, rememberKey) => this.approve(sessionId, run, title, detail, critical, rememberKey), readStoredMessage: (id) => Promise.resolve(this.db.getStoredMessage(sessionId, id)), loadSkill: (name) => loadSkillFromWorkspace(session.workspace, name), todos: { get: () => Promise.resolve(this.db.getTodos(sessionId)), set: (items) => { const todos = this.db.setTodos(sessionId, items); this.emit({ sessionId, runId: run.runId, type: 'todo', todos }); return Promise.resolve(todos) } }, runSubagent: (input, subSignal) => this.runSubagent(this.db.getSession(sessionId), config, run, input, subSignal), runSubagentBatch: (tasks, subSignal) => this.runSubagentBatch(this.db.getSession(sessionId), config, run, tasks, subSignal), runCommand: async (name, argumentsText) => { const commands = await loadProjectCommands(session.workspace); const command = commands.find((item) => item.name === name); if (!command) return { ok: false, error: `أمر غير معروف: ${name}` }; return { ok: true, output: renderCommandTemplate(command.template, argumentsText ?? '') } }, deferAutoCommit: (action, paths) => deferredCommits.push({ action, paths }), pushUndo: (entry) => { const stack = this.undoStacks.get(sessionId) ?? []; stack.push(entry); if (stack.length > 20) stack.shift(); this.undoStacks.set(sessionId, stack) }, popUndo: () => { const stack = this.undoStacks.get(sessionId); return stack?.pop() }, indexer: getProjectIndexer(session.workspace), memory: this.getMemory(session.workspace), fetchFileOnDemand: async (filePath) => { try { const abs = path.resolve(session.workspace, filePath); const content = await fs.readFile(abs, 'utf8'); return content.slice(0, 50_000) } catch { return null } }, ...(this.profile.dedicatedBuild ? { discoverTools: () => BUILD_TOOL_GROUPS, enableToolGroup: async (group: string) => { if (!(group in BUILD_TOOL_GROUPS) || group === 'core') throw new Error(`مجموعة غير صالحة: ${group}`); const typed = group as BuildToolGroup; enabledGroups.add(typed); const tools = typed === 'mcp' ? (await loadMcpTools()).map((tool) => tool.function.name) : [...BUILD_TOOL_GROUPS[typed]]; return { enabled: typed, tools } } } : {}) }
-        toolContext.fullPowerShell = this.profile.fullPowerShellLanguage
+        toolContext.unrestrictedShell = session.permissionMode === 'full'
+        toolContext.fullPowerShell = this.profile.fullPowerShellLanguage || toolContext.unrestrictedShell
         toolContext.tavilyApiKey = this.tavilyStore?.getKey() || undefined
         if (this.profile.dedicatedBuild && this.startPreview) {
           // Q2: نمرر signal الإلغاء إلى بدء المعاينة ليتوقف فورًا عند الإلغاء
@@ -534,10 +558,15 @@ ${subagentList}
           toolContext.capturePreview = async () => {
             const live = toolContext.getPreviewState?.()
             if (!live?.running || !live.url) return null
-            const { capturePreviewPage } = await import('./preview-capture')
+            const { capturePreviewPage, captureVisiblePreview } = await import('./preview-capture')
             const shotDir = path.join(os.tmpdir(), 'r-code-preview')
             await fs.mkdir(shotDir, { recursive: true })
             const shotPath = path.join(shotDir, `${sessionId}.jpg`)
+            const visible = this.getWebContents()
+            if (visible) {
+              const capture = await captureVisiblePreview(visible, live.url, shotPath)
+              if (capture) return capture
+            }
             return capturePreviewPage(live.url, shotPath)
           }
         }
@@ -926,7 +955,7 @@ ${subagentList}
           const router = this.getRouter(session.id, config.model)
           const compactRoute = router.route('compact', config.model)
           const compactConfig = { ...config, model: compactRoute.modelId, apiStyle: compactRoute.apiStyle, contextWindow: compactRoute.contextWindow }
-          const compactReply = await this.modelRequest(compactConfig, [
+          const compactReply = await this.getRequestFunction(compactConfig)(compactConfig, [
             { role: 'system', content: 'لخص سجل وكيل برمجي بدقة ككائن JSON صالح بهذه المفاتيح حصرًا: goal, constraints, decisions, evidence, filesModified, verification, commands, openRisks, nextStep. استخدم نصًا للهدف والخطوة التالية ومصفوفات نصّية لبقية المفاتيح. **احفظ دائمًا**: مسارات الملفات كاملة (مثل src/file.ts:42)، أسماء الدوال والأصناف، أرقام الأسطر المرجعية، الأوامر المنفذة بنتائجها، ورسائل الأخطاء بحرفيتها. استبقِ الأدلة الواقعية والمسارات فقط، ولا تخترع معلومات. اكتب بالعربية.' },
             { role: 'user', content: `${summary.text ? `الملخص السابق:\n${summary.text}\n\n` : ''}السجل الجديد:\n${content}` }
           ], [], { signal, deadlineAt, concurrencyKey: `session:${session.id}`, timeoutMs: 60_000, retries: 0, maxOutputTokens: 4096 })
@@ -1181,7 +1210,7 @@ ${subagentList}
         if (Date.now() >= deadlineAt) throw new Error('وصل الوكيل الفرعي إلى الحد الزمني المسموح')
         const isFinalStep = step === SUBAGENT_MAX_STEPS - 1
         this.setStatus(sessionId, input.description ? `${input.description} — جولة ${step + 1}...` : `وكيل فرعي — جولة ${step + 1}...`, parentRun)
-        const reply = await this.modelRequest(subagentConfig, messages, isFinalStep ? [] : subTools, { signal: controller.signal, deadlineAt, concurrencyKey: `subagent:${sessionId}:${subRunId}`, timeoutMs: 300_000, retries: 1, maxOutputTokens: 8192 })
+        const reply = await this.getRequestFunction(subagentConfig)(subagentConfig, messages, isFinalStep ? [] : subTools, { signal: controller.signal, deadlineAt, concurrencyKey: `subagent:${sessionId}:${subRunId}`, timeoutMs: 300_000, retries: 1, maxOutputTokens: 8192 })
          if (reply.usage) this.recordUsage(sessionId, parentRun, subagentConfig, reply.usage, 0, 'subagent')
         if (!reply.toolCalls.length) {
           const summary = reply.text.trim()
@@ -1259,7 +1288,7 @@ ${subagentList}
       if (signal.aborted) throw new DOMException('أُلغي الوكيل الفرعي', 'AbortError')
       try {
         const instruction = attempt === 0 ? 'أعد الآن خلاصتك النهائية المنظمة بالعربية لكل ما وجدته، بالتفصيل وبأرقام الأسطر المرجعية. لا تستخدم أي أدوات.' : 'أعد الخلاصة النهائية الآن. ابدأ فورًا بكتابة النص دون أي مقدمات أو أدوات.'
-        const reply = await this.modelRequest(config, [...messages, { role: 'user', content: instruction }], [], { signal, deadlineAt, concurrencyKey: `subagent:${sessionId}:${subRunId}`, timeoutMs: 120_000, retries: 0, maxOutputTokens: 8192 })
+        const reply = await this.getRequestFunction(config)(config, [...messages, { role: 'user', content: instruction }], [], { signal, deadlineAt, concurrencyKey: `subagent:${sessionId}:${subRunId}`, timeoutMs: 120_000, retries: 0, maxOutputTokens: 8192 })
         if (reply.usage) this.recordUsage(sessionId, parentRun, config, reply.usage, 0, 'subagent')
         const summary = reply.text.trim()
         if (summary) { emitSubagent('completed', steps, { summary }); return { ok: true, summary, steps } }
@@ -1592,6 +1621,70 @@ interface ToolInputSchema {
   minLength?: number
   minItems?: number
   maxItems?: number
+}
+
+/** يبني تعليمات تصحيح دقيقة من العقد نفسه بدل رسالة عامة قد يكرر النموذج بعدها الخطأ. */
+export function formatInvalidToolCorrection(call: ModelToolCall, error: string, definition?: ToolDefinition): string {
+  const schema = definition?.function.parameters as ToolInputSchema | undefined
+  const received = summarizeToolArguments(call.arguments)
+  const contract = schema ? schemaExample(schema) : 'تعذر العثور على مخطط هذه الأداة.'
+  return [
+    `الأداة: ${call.name}`,
+    `السبب: ${error}`,
+    `المدخلات التي أرسلتها فعليًا:\n${received}`,
+    `العقد المطلوب (JSON):\n${contract}`,
+    'استبدل القيم التوضيحية بالقيم الفعلية المطلوبة، وحافظ على أسماء الحقول كما هي. أعد استدعاء هذه الأداة فقط.'
+  ].join('\n')
+}
+
+function summarizeToolArguments(argumentsText: string): string {
+  try {
+    const value = JSON.parse(argumentsText)
+    return JSON.stringify(limitToolValue(value), null, 2)
+  } catch {
+    return argumentsText.length > 2_000 ? `${argumentsText.slice(0, 2_000)}…` : argumentsText || '(فارغة)'
+  }
+}
+
+function limitToolValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return value.length > 600 ? `${value.slice(0, 600)}…` : value
+  if (depth >= 4) return '[تم اختصار القيمة المتداخلة]'
+  if (Array.isArray(value)) return value.slice(0, 10).map((item) => limitToolValue(item, depth + 1))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).slice(0, 30).map(([key, item]) => [key, key === 'contentReceipt' ? '[بيانات داخلية محجوبة؛ لا تعاود إرسال هذا الحقل]' : limitToolValue(item, depth + 1)]))
+  }
+  return value
+}
+
+function schemaExample(schema: ToolInputSchema, key?: string): string {
+  if (schema.anyOf?.length) return schemaExample(schema.anyOf[0]!, key)
+  if (schema.enum?.length) return JSON.stringify(schema.enum[0])
+  if (schema.type === 'object') {
+    const required = new Set(schema.required ?? [])
+    const entries = Object.entries(schema.properties ?? {}).filter(([name]) => required.has(name))
+    const value = Object.fromEntries(entries.map(([name, child]) => [name, JSON.parse(schemaExample(child, name))]))
+    return JSON.stringify(value, null, 2)
+  }
+  if (schema.type === 'array') {
+    if (schema.minItems === 0 && key !== 'items') return '[]'
+    return `[${schemaExample(schema.items ?? {}, key)}]`
+  }
+  if (schema.type === 'boolean') return 'true'
+  if (schema.type === 'integer' || schema.type === 'number') return '1'
+  return JSON.stringify(exampleString(key))
+}
+
+function exampleString(key?: string): string {
+  switch (key) {
+    case 'content': return 'النص الفعلي الكامل'
+    case 'path': return 'src/file.ts'
+    case 'old_string': return 'النص الحالي المطابق حرفيًا'
+    case 'new_string': return 'النص الجديد'
+    case 'url': return 'https://example.com'
+    case 'query': return 'موضوع البحث'
+    case 'pattern': return '*.ts'
+    default: return 'القيمة المطلوبة'
+  }
 }
 
 function validateToolCall(call: ModelToolCall, definitions: ToolDefinition[] = toolDefinitions): { ok: true; input: Record<string, unknown> } | { ok: false; input: Record<string, unknown>; error: string } {

@@ -40,6 +40,47 @@ export interface ProviderConfig {
 export type ProviderSettings = Omit<ProviderConfig, 'apiKey'> & { hasApiKey: boolean }
 export interface ProviderUpdate { model: string; apiKey?: string; contextWindow?: number }
 
+// ─── Custom Providers ─────────────────────────────────────────────────
+export interface CustomModel {
+  id: string
+  modelId: string
+  contextWindow: number
+  maxOutputTokens: number
+  enabled: boolean
+}
+
+export interface CustomProvider {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  apiStyle: ApiStyle
+  models: CustomModel[]
+  createdAt: number
+  updatedAt: number
+}
+
+export type CustomProviderSettings = Omit<CustomProvider, 'apiKey'> & { hasApiKey: boolean }
+
+export interface CustomProviderUpdate {
+  name: string
+  baseUrl: string
+  apiKey?: string
+  apiStyle: ApiStyle
+  models: Array<{
+    modelId: string
+    contextWindow: number
+    maxOutputTokens: number
+  }>
+}
+
+export interface CustomModelTestResult {
+  success: boolean
+  modelId: string
+  error?: string
+  latency?: number
+}
+
 export interface Attachment {
   name: string
   mimeType: string
@@ -207,6 +248,7 @@ export interface CustomPrompt {
 
 export interface AppApi {
   diagnostics: { runtimeMarker(): Promise<RuntimeMarker> }
+  updates: { check(): Promise<{ status: 'available' | 'none' | 'dev' | 'error'; version?: string; message?: string }>; install(): Promise<void> }
   sessions: {
     list(): Promise<Session[]>
     create(input: { title?: string; workspace: string; initGit?: boolean }): Promise<Session>
@@ -233,6 +275,14 @@ export interface AppApi {
     clearChat(projectId: string): Promise<void>
   }
   provider: { get(): Promise<ProviderSettings>; save(update: ProviderUpdate): Promise<ProviderSettings>; test(update: ProviderUpdate): Promise<string>; clear(): Promise<ProviderSettings> }
+  customProviders: {
+    list(): Promise<CustomProviderSettings[]>
+    save(input: CustomProviderUpdate & { id?: string }): Promise<CustomProviderSettings>
+    remove(id: string): Promise<void>
+    testModel(providerId: string, modelId: string): Promise<CustomModelTestResult>
+    testNewModel(input: { baseUrl: string; apiKey?: string; apiStyle: ApiStyle; modelId: string }): Promise<CustomModelTestResult>
+    getModelConfig(providerId: string, modelId: string): Promise<ProviderConfig | null>
+  }
   tavily: { get(): Promise<{ hasApiKey: boolean }>; save(update: { apiKey: string }): Promise<{ hasApiKey: boolean }>; clear(): Promise<{ hasApiKey: boolean }> }
   files: { chooseFolder(): Promise<string | null>; list(sessionId: string, path?: string): Promise<TreeEntry[]>; read(sessionId: string, path: string): Promise<string>; readAsBase64(sessionId: string, path: string): Promise<Attachment> }
   approval: { answer(id: string, allowed: boolean, remember?: boolean): Promise<void> }

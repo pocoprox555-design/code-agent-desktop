@@ -231,6 +231,7 @@ export const toolDefinitions: ToolDefinition[] = [
   tool('stop_preview', 'أوقف خادم تطوير مشروع Build وأغلق المعاينة. استخدمها عندما يطلب المستخدم إيقاف المعاينة.', {}, []),
   tool('preview_status', 'استعلم عن حالة خادم المعاينة والرابط والخطأ. أي ملخص محتوى هو تحليل محدود لـHTML الخام وليس DOM بعد تشغيل JavaScript.', {}, []),
   tool('get_page_content', 'اقرأ HTML الخام الذي يعيده خادم المعاينة. لا يمثل DOM بعد تشغيل JavaScript أو حالة SPA المرئية.', {}, []),
+  tool('preview_screenshot', 'التقط إطار المعاينة المفتوح الظاهر للمستخدم نفسه. افحص captureSource وvisualState وnote: إذا كانت mostlyBlank=true فالصفحة الظاهرة بيضاء/فارغة فعلًا، وإذا كان consoleCaptured=false فلا تدّع عدم وجود أخطاء console. استخدمها بعد أي تغيير مرئي.', {}, []),
   tool('discover_tools', 'اعرض مجموعات أدوات Build والأدوات المتاحة فيها دون تفعيلها.', {}, []),
   tool('enable_tool_group', 'فعّل مجموعة أدوات لهذا التشغيل فقط؛ تصبح أدواتها متاحة من الجولة التالية.', { group: enumString(['preview', 'web', 'pdf', 'mcp', 'subagents']) }, ['group']),
   tool('analyze_file', 'حلل ملف TypeScript/JavaScript باستخدام Compiler API واعرض: imports, exports, functions, classes, interfaces, types, والعلاقات بينها. أدق بكثير من search_symbols.', { path: str('مسار الملف') }, ['path']),
@@ -256,6 +257,8 @@ export interface ToolContext {
   session: Session
   approve(title: string, detail: string, critical: boolean, rememberKey?: string): Promise<boolean>
   fullPowerShell?: boolean
+  /** Full-permission sessions may use the host shell without workspace sandboxing. */
+  unrestrictedShell?: boolean
   recordMutation?(receipt: Omit<MutationReceipt, 'workspaceRevision'>): void
   signal: AbortSignal
   maxOutputChars?: number
@@ -322,14 +325,17 @@ function protectedPathSegment(value: string): string | undefined {
 
 export async function executeTool(name: string, input: Record<string, unknown>, context: ToolContext): Promise<string> {
   if (context.deadlineAt !== undefined && Date.now() >= context.deadlineAt) return failure('DEADLINE_EXCEEDED', 'انتهى الوقت المتاح للجولة الحالية.')
+  const unrestrictedShell = (name === 'shell' || name === 'run_powershell') && context.session.permissionMode === 'full' && context.unrestrictedShell === true
   if (name === 'shell' || name === 'run_powershell') {
     const rawCommand = typeof input.command === 'string' ? input.command : undefined
     if (rawCommand !== undefined) {
-      const controlCharacterError = rejectUnsafeCommandCharacters(rawCommand)
-      if (controlCharacterError) return failure('INVALID_COMMAND', `${controlCharacterError} rawCommand=${limitedCommand(rawCommand)}`)
-      const normalized = normalizeShellCommand(rawCommand)
-      if (normalized.error) return failure('INVALID_COMMAND', `${normalized.error} rawCommand=${JSON.stringify(rawCommand)}`)
-      input = { ...input, command: normalized.command, rawCommand }
+      if (!unrestrictedShell) {
+        const controlCharacterError = rejectUnsafeCommandCharacters(rawCommand)
+        if (controlCharacterError) return failure('INVALID_COMMAND', `${controlCharacterError} rawCommand=${limitedCommand(rawCommand)}`)
+        const normalized = normalizeShellCommand(rawCommand)
+        if (normalized.error) return failure('INVALID_COMMAND', `${normalized.error} rawCommand=${JSON.stringify(rawCommand)}`)
+        input = { ...input, command: normalized.command, rawCommand }
+      }
     }
   }
   const mutating = isToolMutating(name)
@@ -369,7 +375,9 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
   const targetInput = name === 'read_files' && typeof input.paths === 'string' ? '.' : name === 'move_file' && typeof input.from === 'string' ? input.from : typeof input.path === 'string' ? input.path : typeof input.cwd === 'string' ? input.cwd : '.'
   let target: ResolvedPath
   try {
-    target = name === 'web_fetch' || name === 'web_search' ? { absolute: root.canonical, relative: '.' } : name === 'write_file' || name === 'create_directory' || name === 'append_file' ? await resolveCreatable(root, targetInput) : await resolveExisting(root, targetInput)
+    target = unrestrictedShell
+      ? await resolveUnrestrictedDirectory(typeof input.cwd === 'string' ? input.cwd : root.canonical)
+      : name === 'web_fetch' || name === 'web_search' ? { absolute: root.canonical, relative: '.' } : name === 'write_file' || name === 'create_directory' || name === 'append_file' ? await resolveCreatable(root, targetInput) : await resolveExisting(root, targetInput)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       const suggestion = name === 'read_file' || name === 'edit_file'
@@ -564,7 +572,7 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
     case 'run_powershell': {
       const requestedTimeout = number(input.timeout_ms, 30_000, 1_000, 600_000)
       const remaining = context.deadlineAt === undefined ? requestedTimeout : Math.max(1_000, Math.min(requestedTimeout, context.deadlineAt - Date.now()))
-       const result = await runPowerShell(requiredString(input.command, 'command'), root.canonical, target.absolute, context.signal, remaining, context.trackProcess, context.fullPowerShell)
+        const result = await runPowerShell(requiredString(input.command, 'command'), root.canonical, target.absolute, context.signal, remaining, context.trackProcess, context.fullPowerShell, unrestrictedShell)
       return success(result)
     }
     case 'shell': {
@@ -572,9 +580,9 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
       const requestedTimeout = number(input.timeout_ms, 30_000, 1_000, 600_000)
       const remaining = context.deadlineAt === undefined ? requestedTimeout : Math.max(1_000, Math.min(requestedTimeout, context.deadlineAt - Date.now()))
       let shellInstance = persistentShells.get(context.session.id)
-       if (!shellInstance || shellInstance.fullPowerShell !== Boolean(context.fullPowerShell) || !shellInstance.child || shellInstance.child.killed || shellInstance.child.exitCode !== null) {
-         shellInstance?.close()
-        shellInstance = new PersistentShell(root.canonical, context.fullPowerShell)
+        if (!shellInstance || shellInstance.fullPowerShell !== Boolean(context.fullPowerShell) || shellInstance.unrestricted !== unrestrictedShell || !shellInstance.child || shellInstance.child.killed || shellInstance.child.exitCode !== null) {
+          shellInstance?.close()
+          shellInstance = new PersistentShell(root.canonical, context.fullPowerShell, unrestrictedShell)
         persistentShells.set(context.session.id, shellInstance)
       }
       const result = await shellInstance.run(requiredString(input.command, 'command'), remaining, context.signal)
@@ -784,15 +792,17 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
   }
 }
 
-export async function runPowerShell(command: string, workspaceRoot: string, cwd: string, signal?: AbortSignal, timeoutMs = 30_000, trackProcess?: (child: import('child_process').ChildProcess) => void, fullPowerShell = false): Promise<{ output: string; exitCode: number; timedOut: boolean; truncated: boolean; durationMs: number }> {
-  const controlCharacterError = rejectUnsafeCommandCharacters(command)
-  if (controlCharacterError) throw new Error(`رفض الأمر: ${controlCharacterError}\n💡 تأكد من عدم وجود أحرف خاصة غير مسموحة في الأمر.`)
-  const normalized = normalizeShellCommand(command)
-  if (normalized.error) throw new Error(`رفض الأمر: ${normalized.error}\n💡 استخدم صيغة صحيحة مثل: shell: أو run_powershell:`)
-  command = normalized.command
-  const policyError = validateSandboxCommand(command, workspaceRoot, cwd)
-  if (policyError) throw new Error(`رفض الأمر في وضع العزل: ${policyError}\n💡 في وضع العزل، بعض الأوامر محظورة لأسباب أمنية. جرب أمرًا مختلفًا.`)
-  await validateSandboxCommandAsync(command, workspaceRoot, cwd)
+export async function runPowerShell(command: string, workspaceRoot: string, cwd: string, signal?: AbortSignal, timeoutMs = 30_000, trackProcess?: (child: import('child_process').ChildProcess) => void, fullPowerShell = false, unrestricted = false): Promise<{ output: string; exitCode: number; timedOut: boolean; truncated: boolean; durationMs: number }> {
+  if (!unrestricted) {
+    const controlCharacterError = rejectUnsafeCommandCharacters(command)
+    if (controlCharacterError) throw new Error(`رفض الأمر: ${controlCharacterError}\n💡 تأكد من عدم وجود أحرف خاصة غير مسموحة في الأمر.`)
+    const normalized = normalizeShellCommand(command)
+    if (normalized.error) throw new Error(`رفض الأمر: ${normalized.error}\n💡 استخدم صيغة صحيحة مثل: shell: أو run_powershell:`)
+    command = normalized.command
+    const policyError = validateSandboxCommand(command, workspaceRoot, cwd)
+    if (policyError) throw new Error(`رفض الأمر في وضع العزل: ${policyError}\n💡 في وضع العزل، بعض الأوامر محظورة لأسباب أمنية. جرب أمرًا مختلفًا.`)
+    await validateSandboxCommandAsync(command, workspaceRoot, cwd)
+  }
   const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   return new Promise((resolve, reject) => {
     const startedAt = Date.now()
@@ -1068,7 +1078,7 @@ class PersistentShell {
   initError: Error | null = null
   currentMarker: string | null = null
 
-  constructor(readonly workspace: string, readonly fullPowerShell = false) { this.cwd = workspace }
+  constructor(readonly workspace: string, readonly fullPowerShell = false, readonly unrestricted = false) { this.cwd = workspace }
 
   private spawn(): import('child_process').ChildProcess {
     const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -1130,18 +1140,22 @@ class PersistentShell {
   }
 
   async run(command: string, timeoutMs: number, signal: AbortSignal): Promise<{ output: string; exitCode: number; cwd: string; timedOut: boolean; truncated: boolean }> {
-    const normalized = normalizeShellCommand(command)
-    if (normalized.error) throw new Error(`رفض الأمر: ${normalized.error} rawCommand=${JSON.stringify(command)}`)
-    command = normalized.command
-    const policyError = validateSandboxCommand(command, this.workspace, this.cwd)
-    if (policyError) throw new Error(`رفض الأمر في وضع العزل: ${policyError}`)
-    await validateSandboxCommandAsync(command, this.workspace, this.cwd)
+    if (!this.unrestricted) {
+      const normalized = normalizeShellCommand(command)
+      if (normalized.error) throw new Error(`رفض الأمر: ${normalized.error} rawCommand=${JSON.stringify(command)}`)
+      command = normalized.command
+      const policyError = validateSandboxCommand(command, this.workspace, this.cwd)
+      if (policyError) throw new Error(`رفض الأمر في وضع العزل: ${policyError}`)
+      await validateSandboxCommandAsync(command, this.workspace, this.cwd)
+    }
     await this.ensure()
     if (this.waiter) throw new Error('shell الدائم مشغول بأمر آخر')
     // أعد الفحص بعد التهيئة كدفاع إضافي ضد تغير cwd أثناء الانتظار.
-    const recheckError = validateSandboxCommand(command, this.workspace, this.cwd)
-    if (recheckError) throw new Error(`رفض الأمر في وضع العزل: ${recheckError}`)
-    await validateSandboxCommandAsync(command, this.workspace, this.cwd)
+    if (!this.unrestricted) {
+      const recheckError = validateSandboxCommand(command, this.workspace, this.cwd)
+      if (recheckError) throw new Error(`رفض الأمر في وضع العزل: ${recheckError}`)
+      await validateSandboxCommandAsync(command, this.workspace, this.cwd)
+    }
 
     const id = ++this.markerN
     const marker = `__CODE_AGENT_END_${id}-${randomUUID().slice(0, 8)}__`
@@ -1258,6 +1272,13 @@ async function resolveExisting(root: WorkspaceRoot, input: string): Promise<Reso
   const canonical = await fs.realpath(candidate)
   assertInside(root.canonical, canonical)
   return { absolute: canonical, relative: relativePath(root.canonical, canonical) }
+}
+
+async function resolveUnrestrictedDirectory(input: string): Promise<ResolvedPath> {
+  const canonical = await fs.realpath(path.resolve(input))
+  const stat = await fs.stat(canonical)
+  if (!stat.isDirectory()) throw new Error('مجلد التشغيل ليس مجلدًا')
+  return { absolute: canonical, relative: canonical }
 }
 
 async function resolveCreatable(root: WorkspaceRoot, input: string): Promise<ResolvedPath> {

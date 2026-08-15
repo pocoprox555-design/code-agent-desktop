@@ -55,7 +55,7 @@ export const MAIN_CHAT_PROFILE: AgentProfile = {
   fullPowerShellLanguage: false,
   eventChannel: 'agent:event',
   approvalChannel: 'approval:request',
-  maxSteps: 30,
+  maxSteps: 500,
   runtimeMs: 30 * 60_000,
   autoCompleteTodos: false,
   autoPreview: false,

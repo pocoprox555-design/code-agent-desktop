@@ -1,10 +1,10 @@
 /**
- * ModelSelector Component — اختيار النموذج من 18 نموذجاً
- * مستخرج من App.tsx (P1-01)
+ * ModelSelector Component — اختيار النموذج من القائمة
+ * يدعم النماذج الافتراضية + المزودات المخصصة
  */
-import { useState, useEffect, useRef, useId, memo } from 'react'
+import { useState, useEffect, useRef, useId, memo, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
-import type { ProviderSettings } from '../../../shared/types'
+import type { ProviderSettings, CustomProviderSettings } from '../../../shared/types'
 import { GO_MODELS } from '../../../shared/models'
 
 interface ModelSelectProps {
@@ -13,12 +13,40 @@ interface ModelSelectProps {
   small?: boolean
 }
 
+// Custom model ID format: "custom:{providerId}:{modelId}"
+export function isCustomModelId(id: string): boolean {
+  return id.startsWith('custom:')
+}
+
+export function parseCustomModelId(id: string): { providerId: string; modelId: string } | null {
+  const parts = id.split(':')
+  if (parts.length !== 3 || parts[0] !== 'custom' || !parts[1] || !parts[2]) return null
+  return { providerId: parts[1], modelId: parts[2] }
+}
+
+export function buildCustomModelId(providerId: string, modelId: string): string {
+  return `custom:${providerId}:${modelId}`
+}
+
 const MemoModelSelect = memo(function ModelSelect({ provider, change, small = false }: ModelSelectProps) {
   const [open, setOpen] = useState(false)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null)
+  const [customProviders, setCustomProviders] = useState<CustomProviderSettings[]>([])
   const menuId = useId()
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    void window.rCode.customProviders.list().then(setCustomProviders).catch(() => {})
+  }, [])
+
+  // إعادة جلب المزودات المخصصة عند كل فتح للقائمة (لأنها قد تتغير من الإعدادات)
+  const toggleOpen = useCallback(() => {
+    if (!open) {
+      void window.rCode.customProviders.list().then(setCustomProviders).catch(() => {})
+    }
+    setOpen((prev) => !prev)
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -54,23 +82,54 @@ const MemoModelSelect = memo(function ModelSelect({ provider, change, small = fa
     }
   }, [open])
 
-  const selected = GO_MODELS.find((m) => m.id === provider.model)
+  const getSelectedName = useCallback(() => {
+    if (isCustomModelId(provider.model)) {
+      const parsed = parseCustomModelId(provider.model)
+      if (parsed) {
+        const cp = customProviders.find((p) => p.id === parsed.providerId)
+        const cm = cp?.models.find((m) => m.id === parsed.modelId)
+        if (cp && cm) return `${cp.name} / ${cm.modelId}`
+      }
+    }
+    return GO_MODELS.find((m) => m.id === provider.model)?.name ?? provider.model
+  }, [provider.model, customProviders])
+
+  const hasCustomModels = customProviders.some((p) => p.models.length > 0)
 
   return (
     <div className={`model-select ${small ? 'small' : ''}`}>
-      <button ref={btnRef} className="model-select-btn" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? menuId : undefined} onClick={() => setOpen(!open)} type="button">
+      <button ref={btnRef} className="model-select-btn" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? menuId : undefined} onClick={toggleOpen} type="button">
         <span className="model-dot" />
-        <span>{selected?.name ?? provider.model}</span>
+        <span>{getSelectedName()}</span>
         <ChevronDown size={12} className={`chev ${open ? 'rot' : ''}`} />
       </button>
       {open && menuPos && (
         <div id={menuId} ref={menuRef} className="model-select-menu" role="listbox" style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, width: menuPos.width, maxHeight: menuPos.maxHeight }}>
+          {/* OpenCode Go Models */}
           {GO_MODELS.map((model) => (
             <button key={model.id} role="option" aria-selected={model.id === provider.model} className={`model-select-item ${model.id === provider.model ? 'active' : ''}`} onClick={() => { change(model.id); setOpen(false) }} type="button">
               <span className="model-select-name">{model.name}</span>
               <span className="model-select-meta">{model.apiStyle === 'chat' ? 'Chat' : model.apiStyle === 'responses' ? 'Responses' : 'Anthropic'} · {(model.contextWindow / 1_000_000).toFixed(0)}M</span>
             </button>
           ))}
+
+          {/* Custom Provider Models */}
+          {hasCustomModels && (
+            <>
+              <div className="model-select-divider">المزودات المخصصة</div>
+              {customProviders.map((cp) =>
+                cp.models.map((cm) => {
+                  const customId = buildCustomModelId(cp.id, cm.id)
+                  return (
+                    <button key={customId} role="option" aria-selected={customId === provider.model} className={`model-select-item ${customId === provider.model ? 'active' : ''}`} onClick={() => { change(customId); setOpen(false) }} type="button">
+                      <span className="model-select-name">{cm.modelId}</span>
+                      <span className="model-select-meta">{cp.name} · {cp.apiStyle === 'chat' ? 'Chat' : cp.apiStyle === 'anthropic' ? 'Anthropic' : 'Responses'} · {(cm.contextWindow / 1_000_000).toFixed(0)}M</span>
+                    </button>
+                  )
+                })
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

@@ -10,6 +10,7 @@ import { useBuildStore } from '../stores/buildStore'
 import ModelSelect from './ModelSelector'
 import { ExecutionTimeline } from './ExecutionTimeline'
 import type { Attachment, ProviderSettings, AgentEvent, ApprovalRequest, BuildRunInfo } from '../../../shared/types'
+import { compressImageAttachment } from '../image-attachment'
 
 interface Props {
   provider: ProviderSettings
@@ -239,13 +240,13 @@ export function BuildChat({ provider, onClose }: Props) {
 
   // إرسال رسالة (مع مرفقات إن وُجدت)
   const handleSend = useCallback(async () => {
-    if (!buildSessionId || !input.trim() || sending) return
+    if (!buildSessionId || (!input.trim() && !attachments.length) || sending) return
     // R8: فحص المشروع قبل أي شيء — لا نضيف رسالة ثم نرجع بصمت فنعلق حالة الإرسال.
     if (!project) {
       store.setCreateError('لا يوجد مشروع مفتوح. افتح مشروعًا أولًا.')
       return
     }
-    const text = input.trim()
+    const text = input.trim() || 'حلل الصورة المرفقة ونفّذ المطلوب الظاهر فيها.'
     const outgoing = attachments.length ? [...attachments] : undefined
     followMessages.current = true
     setInput('')
@@ -275,21 +276,33 @@ export function BuildChat({ provider, onClose }: Props) {
   }, [buildSessionId, input, sending, store, chatModel, provider.model, project, attachments])
 
   // ─── إرفاق صور من الجهاز ─────────────────────────────────────────
+  const addImageFiles = useCallback(async (fileList: File[]) => {
+    const available = Math.max(0, 5 - attachments.length)
+    const images = fileList.filter((file) => file.type.startsWith('image/') && file.size <= 20_000_000).slice(0, available)
+    if (!images.length) return
+    try {
+      const compressed = await Promise.all(images.map((file, index) => compressImageAttachment(file, `pasted-image-${Date.now()}-${index}.jpg`)))
+      setAttachments((current) => [...current, ...compressed].slice(0, 5))
+    } catch (error) {
+      store.setCreateError(error instanceof Error ? error.message : 'تعذر ضغط الصورة')
+    }
+  }, [attachments.length, store])
+
   const handlePickFiles = useCallback((fileList: FileList | null) => {
     if (!fileList) return
-    const images = [...fileList].filter((file) => file.type.startsWith('image/') && file.size <= 8_000_000).slice(0, 5)
-    for (const file of images) {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = String(reader.result ?? '')
-        const comma = dataUrl.indexOf(',')
-        if (comma < 0) return
-        setAttachments((current) => current.length >= 5 ? current : [...current, { name: file.name, mimeType: file.type, data: dataUrl.slice(comma + 1), size: file.size }])
-      }
-      reader.readAsDataURL(file)
-    }
+    void addImageFiles([...fileList])
     if (fileInputRef.current) fileInputRef.current.value = ''
-  }, [])
+  }, [addImageFiles])
+
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = [...event.clipboardData.items]
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file))
+    if (!images.length) return
+    event.preventDefault()
+    void addImageFiles(images)
+  }, [addImageFiles])
 
   // ─── @file: إكمال تلقائي لمسارات المشروع ─────────────────────────
   const mentionMatches = mentionQuery === null ? [] : files.filter((file) => file.relativePath.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 8)
@@ -456,6 +469,7 @@ export function BuildChat({ provider, onClose }: Props) {
                 dir="auto"
                 value={input}
                 onChange={(event) => handleInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
+                onPaste={handlePaste}
                 onKeyDown={(event) => {
                   if (mentionQuery !== null && mentionMatches.length > 0) {
                     if (event.key === 'ArrowDown') { event.preventDefault(); setMentionIndex((current) => (current + 1) % mentionMatches.length); return }
@@ -465,14 +479,14 @@ export function BuildChat({ provider, onClose }: Props) {
                   }
                   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSend() }
                 }}
-                placeholder={working ? 'الوكيل يعمل... اكتب رسالة متابعة للتدخل الفوري' : 'اكتب تعليمات البناء... (@ للإشارة لملف، Shift+Enter لسطر جديد)'}
+                placeholder={working ? 'الوكيل يعمل... اكتب رسالة متابعة للتدخل الفوري' : 'اكتب تعليمات البناء أو الصق صورة... (@ لملف، Shift+Enter لسطر جديد)'}
                 rows={1}
                 disabled={sending}
               />
               <button type="button" aria-label="إرسال تعليمات البناء"
                 className="build-chat-send"
                 onClick={handleSend}
-                disabled={!input.trim() || sending}
+                disabled={(!input.trim() && !attachments.length) || sending}
               >
                 {sending ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
               </button>

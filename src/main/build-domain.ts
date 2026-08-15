@@ -6,6 +6,7 @@ import type { AgentRunState, AuditEvent, BuildProject, BuildProjectOpenPayload, 
 import { AgentRunner } from './agent'
 import { AppDatabase } from './database'
 import type { ProviderStore } from './provider-store'
+import type { CustomProviderStore } from './custom-provider-store'
 import type { TavilyStore } from './tavily-store'
 import type { requestModel } from './provider'
 import { McpManager } from './mcp'
@@ -68,7 +69,7 @@ export class BuildDomain {
   readonly db: AppDatabase
   readonly runner: AgentRunner
 
-  constructor(opts: { userData: string; providers: ProviderStore; mcp: McpManager; getWebContents: () => WebContents | null; modelRequest?: typeof requestModel; startPreview?: (projectId: string, projectPath: string, signal?: AbortSignal) => Promise<DevServerState>; stopPreview?: (projectId: string) => Promise<DevServerState>; previewStatus?: (projectId: string) => DevServerState; tavilyStore?: TavilyStore }) {
+  constructor(opts: { userData: string; providers: ProviderStore; mcp: McpManager; getWebContents: () => WebContents | null; modelRequest?: typeof requestModel; startPreview?: (projectId: string, projectPath: string, signal?: AbortSignal) => Promise<DevServerState>; stopPreview?: (projectId: string) => Promise<DevServerState>; previewStatus?: (projectId: string) => DevServerState; tavilyStore?: TavilyStore; customProviders?: CustomProviderStore }) {
     this.db = new AppDatabase(join(opts.userData, 'build.db'))
     const startPreview = opts.startPreview ? async (session: Session, signal?: AbortSignal): Promise<DevServerState> => {
       const row = this.db.rawDb.prepare('SELECT id FROM build_projects WHERE chat_session_id=?').get(session.id) as { id?: string } | undefined
@@ -87,7 +88,7 @@ export class BuildDomain {
       if (!row?.id) return { running: false }
       return opts.previewStatus!(row.id)
     } : undefined
-    this.runner = new AgentRunner(this.db, opts.providers, opts.getWebContents, opts.modelRequest, opts.mcp, DEDICATED_BUILD_PROFILE.eventChannel, DEDICATED_BUILD_PROFILE.approvalChannel, startPreview, stopPreview, previewStatus, opts.tavilyStore, DEDICATED_BUILD_PROFILE)
+    this.runner = new AgentRunner(this.db, opts.providers, opts.getWebContents, opts.modelRequest, opts.mcp, DEDICATED_BUILD_PROFILE.eventChannel, DEDICATED_BUILD_PROFILE.approvalChannel, startPreview, stopPreview, previewStatus, opts.tavilyStore, DEDICATED_BUILD_PROFILE, opts.customProviders)
     this.ensureProjectsTable()
     this.migrateLegacyBuildSessions()
     this.syncProjectSessionPrompts()

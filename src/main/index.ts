@@ -6,13 +6,14 @@ import { z } from 'zod'
 import { createHash } from 'node:crypto'
 import { AppDatabase } from './database'
 import { ProviderStore } from './provider-store'
+import { CustomProviderStore } from './custom-provider-store'
 import { TavilyStore } from './tavily-store'
 import { AgentRunner } from './agent'
 import { ensureGitRepository, isBlockedHost } from './tools'
 import { McpManager } from './mcp'
-import { requestModel } from './provider'
-import { GO_MODELS } from '../shared/models'
-import type { Attachment, TreeEntry } from '../shared/types'
+import { requestModel, requestOnce } from './provider'
+import { GO_MODELS, apiPathFor } from '../shared/models'
+import type { Attachment, TreeEntry, ApiStyle, CustomProviderUpdate, ProviderConfig } from '../shared/types'
 import { isTrustedRendererUrl } from './ipc-security'
 import { createRuntimeMarker, type RuntimeMarker } from './runtime-marker'
 import { autoUpdater } from 'electron-updater'
@@ -54,13 +55,14 @@ else {
      const db = new AppDatabase(join(app.getPath('userData'), 'r-code-agent.db'))
     database = db
     const providers = new ProviderStore(join(app.getPath('userData'), 'provider.json'))
+    const customProviders = new CustomProviderStore(join(app.getPath('userData'), 'custom-providers.json'))
     const tavilyStore = new TavilyStore(join(app.getPath('userData'), 'tavily.json'))
     const mcp = new McpManager(join(app.getPath('userData'), 'mcp.json'))
     mcpManager = mcp
-    const agent = new AgentRunner(db, providers, () => mainWindow?.isDestroyed() ? null : mainWindow?.webContents ?? null, undefined, mcp, MAIN_CHAT_PROFILE.eventChannel, MAIN_CHAT_PROFILE.approvalChannel, undefined, undefined, undefined, tavilyStore, MAIN_CHAT_PROFILE)
+    const agent = new AgentRunner(db, providers, () => mainWindow?.isDestroyed() ? null : mainWindow?.webContents ?? null, undefined, mcp, MAIN_CHAT_PROFILE.eventChannel, MAIN_CHAT_PROFILE.approvalChannel, undefined, undefined, undefined, tavilyStore, MAIN_CHAT_PROFILE, customProviders)
     agentRunner = agent
-     buildDomain = new BuildDomain({ userData: app.getPath('userData'), providers, mcp, getWebContents: () => mainWindow?.isDestroyed() ? null : mainWindow?.webContents ?? null, startPreview: (projectId, projectPath, signal) => getDevServerManager().startWithInstall(projectId, projectPath, signal), stopPreview: (projectId) => getDevServerManager().stop(projectId), previewStatus: (projectId) => getDevServerManager().status(projectId), tavilyStore })
-    registerIpc(db, providers, agent, tavilyStore)
+     buildDomain = new BuildDomain({ userData: app.getPath('userData'), providers, mcp, getWebContents: () => mainWindow?.isDestroyed() ? null : mainWindow?.webContents ?? null, startPreview: (projectId, projectPath, signal) => getDevServerManager().startWithInstall(projectId, projectPath, signal), stopPreview: (projectId) => getDevServerManager().stop(projectId), previewStatus: (projectId) => getDevServerManager().status(projectId), tavilyStore, customProviders })
+    registerIpc(db, providers, customProviders, agent, tavilyStore)
     registerBuildIpc(buildDomain)
     try { cleanupLegacyBuildSessions(db, agent) } catch { /* تنظيف قديم — لا يعطل الإقلاع */ }
     createWindow()
@@ -101,7 +103,6 @@ function createWindow(): void {
     try {
       autoUpdater.autoDownload = false // لا نحمل تلقائياً — ننتظر موافقة المستخدم
       autoUpdater.autoInstallOnAppQuit = true
-      autoUpdater.checkForUpdatesAndNotify().catch(() => { /* فشل صامت — قد لا يكون هناك اتصال */ })
       autoUpdater.on('update-available', () => {
         if (!window.isDestroyed()) {
           window.webContents.send('agent:event', {
@@ -110,6 +111,7 @@ function createWindow(): void {
           })
         }
       })
+      autoUpdater.checkForUpdates().catch(() => { /* فشل صامت — يمكن الفحص يدويًا */ })
     } catch { /* electron-updater غير متاح في وضع dev */ }
   }
 }
@@ -122,8 +124,23 @@ const sessionCreate = z.object({ workspace: filePath, title: z.string().trim().m
 const attachmentInput = z.object({ name: z.string().min(1).max(255), mimeType: z.string().min(1).max(128), data: z.string().max(28_000_000), size: z.number().int().nonnegative().max(20_000_000) }).strict()
 const attachmentsInput = z.array(attachmentInput).max(10).refine((items) => items.reduce((total, item) => total + item.size, 0) <= 40_000_000, 'إجمالي المرفقات أكبر من 40 ميغابايت').refine((items) => items.every((item) => /^[A-Za-z0-9+/]*={0,2}$/.test(item.data)), 'بيانات مرفق غير صالحة')
 
-function registerIpc(db: AppDatabase, providers: ProviderStore, agent: AgentRunner, tavilyStore: TavilyStore): void {
+function registerIpc(db: AppDatabase, providers: ProviderStore, customProviders: CustomProviderStore, agent: AgentRunner, tavilyStore: TavilyStore): void {
   handle('diagnostics:runtimeMarker', z.tuple([]), () => runtimeMarker)
+  handle('app:update:check', z.tuple([]), async () => {
+    if (!app.isPackaged) return { status: 'dev' as const, message: 'التحديثات متاحة بعد بناء نسخة التثبيت.' }
+    try {
+      const result = await autoUpdater.checkForUpdates()
+      if (!result?.updateInfo || result.updateInfo.version === app.getVersion()) return { status: 'none' as const, message: 'أنت تستخدم أحدث إصدار.' }
+      return { status: 'available' as const, version: result.updateInfo.version, message: `يتوفر الإصدار ${result.updateInfo.version}.` }
+    } catch (error) {
+      return { status: 'error' as const, message: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  handle('app:update:install', z.tuple([]), async () => {
+    if (!app.isPackaged) throw new Error('التحديثات متاحة بعد بناء نسخة التثبيت.')
+    await autoUpdater.downloadUpdate()
+    autoUpdater.quitAndInstall()
+  })
   handle('sessions:create', z.tuple([sessionCreate]), async (input) => { const workspace = await fs.realpath(input.workspace); if (!(await fs.stat(workspace)).isDirectory()) throw new Error('مساحة العمل ليست مجلدًا'); if (input.initGit) await ensureGitRepository(workspace); return db.createSession(workspace, input.title, Boolean(input.initGit)) })
   handle('sessions:list', z.tuple([]), () => db.listSessions())
   handle('sessions:update', z.tuple([id, sessionPatch]), (sessionId, patch) => db.updateSession(sessionId, patch))
@@ -166,6 +183,71 @@ function registerIpc(db: AppDatabase, providers: ProviderStore, agent: AgentRunn
   handle('provider:save', z.tuple([providerUpdate]), (update) => providers.save(update))
   handle('provider:clear', z.tuple([]), () => providers.clear())
   handle('provider:test', z.tuple([providerUpdate]), async (update) => { const config = providers.resolve(update); if (!config.apiKey) throw new Error('أضف مفتاح API أولًا'); const reply = await requestModel(config, [{ role: 'user', content: 'أجب بكلمة: متصل' }], [], { timeoutMs: 30_000, retries: 1 }); return reply.text })
+
+  // ─── Custom Providers ─────────────────────────────────────────────
+  const customProviderUpdateSchema = z.object({
+    name: z.string().min(1).max(200),
+    baseUrl: z.string().url(),
+    apiKey: z.string().max(8192).optional(),
+    apiStyle: z.enum(['chat', 'responses', 'anthropic']),
+    models: z.array(z.object({
+      modelId: z.string().min(1).max(200),
+      contextWindow: z.number().int().min(32_000).max(2_000_000),
+      maxOutputTokens: z.number().int().min(256).max(1_000_000),
+    })).min(1).max(20),
+    id: z.string().uuid().optional(),
+  }).strict()
+
+  handle('customProviders:list', z.tuple([]), () => customProviders.list())
+  handle('customProviders:save', z.tuple([customProviderUpdateSchema]), (input) => customProviders.save(input))
+  handle('customProviders:remove', z.tuple([z.string().uuid()]), (providerId) => customProviders.remove(providerId))
+  handle('customProviders:getModelConfig', z.tuple([z.string().uuid(), z.string().uuid()]), (providerId, modelId) => customProviders.getConfig(providerId, modelId))
+  handle('customProviders:testNewModel', z.tuple([z.object({
+    baseUrl: z.string().url(),
+    apiKey: z.string().max(8192).optional(),
+    apiStyle: z.enum(['chat', 'responses', 'anthropic']),
+    modelId: z.string().min(1).max(200),
+  }).strict()]), async (input) => {
+    const startTime = Date.now()
+    try {
+      const config: ProviderConfig = {
+        name: 'test',
+        baseUrl: input.baseUrl.replace(/\/+$/, ''),
+        apiPath: apiPathFor(input.apiStyle),
+        apiStyle: input.apiStyle,
+        model: input.modelId,
+        contextWindow: 128_000,
+        maxOutputTokens: 4096,
+        apiKey: input.apiKey ?? '',
+      }
+      await requestOnce(config, [{ role: 'user', content: 'Hi' }], [], { timeoutMs: 30_000, retries: 0 })
+      return { success: true, modelId: input.modelId, latency: Date.now() - startTime }
+    } catch (error) {
+      return { success: false, modelId: input.modelId, error: error instanceof Error ? error.message : String(error), latency: Date.now() - startTime }
+    }
+  })
+  handle('customProviders:testModel', z.tuple([z.string().uuid(), z.string().uuid()]), async (providerId, modelId) => {
+    const config = customProviders.getConfig(providerId, modelId)
+    if (!config) return { success: false, modelId, error: 'المزود أو النموذج غير موجود' }
+    const startTime = Date.now()
+    try {
+      const providerConfig: ProviderConfig = {
+        name: 'test',
+        baseUrl: config.baseUrl,
+        apiPath: apiPathFor(config.apiStyle),
+        apiStyle: config.apiStyle,
+        model: config.model,
+        contextWindow: config.contextWindow,
+        maxOutputTokens: config.maxOutputTokens,
+        apiKey: config.apiKey,
+      }
+      await requestOnce(providerConfig, [{ role: 'user', content: 'Hi' }], [], { timeoutMs: 30_000, retries: 0 })
+      return { success: true, modelId, latency: Date.now() - startTime }
+    } catch (error) {
+      return { success: false, modelId, error: error instanceof Error ? error.message : String(error), latency: Date.now() - startTime }
+    }
+  })
+
   handle('tavily:get', z.tuple([]), () => ({ hasApiKey: Boolean(tavilyStore.getKey()) }))
   handle('tavily:save', z.tuple([z.object({ apiKey: z.string().max(8192) })]), (input) => { tavilyStore.saveKey(input.apiKey); return { hasApiKey: Boolean(input.apiKey.trim()) } })
   handle('tavily:clear', z.tuple([]), () => { tavilyStore.clearKey(); return { hasApiKey: false } })

@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentEvent, AppApi, ApprovalRequest, Attachment, ProviderUpdate } from '../shared/types'
+import type { AgentEvent, AppApi, ApprovalRequest, Attachment, ProviderUpdate, CustomProviderUpdate, ApiStyle } from '../shared/types'
 
 const api: AppApi = {
   diagnostics: { runtimeMarker: () => ipcRenderer.invoke('diagnostics:runtimeMarker') },
+  updates: { check: () => ipcRenderer.invoke('app:update:check'), install: () => ipcRenderer.invoke('app:update:install') },
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list'),
     create: (input) => ipcRenderer.invoke('sessions:create', input),
@@ -39,6 +40,14 @@ const api: AppApi = {
     clearChat: (id) => ipcRenderer.invoke('build:projects:clearChat', id),
   },
   provider: { get: () => ipcRenderer.invoke('provider:get'), save: (update: ProviderUpdate) => ipcRenderer.invoke('provider:save', update), test: (update: ProviderUpdate) => ipcRenderer.invoke('provider:test', update), clear: () => ipcRenderer.invoke('provider:clear') },
+  customProviders: {
+    list: () => ipcRenderer.invoke('customProviders:list'),
+    save: (input: CustomProviderUpdate & { id?: string }) => ipcRenderer.invoke('customProviders:save', input),
+    remove: (id: string) => ipcRenderer.invoke('customProviders:remove', id),
+    testModel: (providerId: string, modelId: string) => ipcRenderer.invoke('customProviders:testModel', providerId, modelId),
+    testNewModel: (input: { baseUrl: string; apiKey?: string; apiStyle: ApiStyle; modelId: string }) => ipcRenderer.invoke('customProviders:testNewModel', input),
+    getModelConfig: (providerId: string, modelId: string) => ipcRenderer.invoke('customProviders:getModelConfig', providerId, modelId),
+  },
   tavily: {
     get: () => ipcRenderer.invoke('tavily:get'),
     save: (update: { apiKey: string }) => ipcRenderer.invoke('tavily:save', update),

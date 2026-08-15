@@ -8,7 +8,7 @@ import { ExecutionTimeline as ExecutionTimelineImpl } from './components/Executi
 import { CodeBlock } from './components/CodeBlock'
 import { SettingsModal } from './components/SettingsModal'
 import { ApprovalModal, GitInitModal, TodoList } from './components/Modals'
-import ModelSelect from './components/ModelSelector'
+import ModelSelect, { isCustomModelId, parseCustomModelId, buildCustomModelId } from './components/ModelSelector'
 import { useFocusTrap } from './hooks/useFocusTrap'
 import type { AgentEvent, AgentRunState, ApprovalRequest, Attachment, AuditEvent, CustomPrompt, Message, ProviderSettings, RuntimeMarker, Session, SessionRunState, Subagent, SubagentEvent, Todo, ToolCallRecord, TreeEntry, UsageSummary } from '../../shared/types'
 import { getGoModel, GO_MODELS, goProviderConfig } from '../../shared/models'
@@ -103,7 +103,12 @@ export function App() {
     updateView(request.sessionId, (current) => current.runId && request.runId && current.runId !== request.runId ? current : ({ ...current, runId: request.runId ?? current.runId, phase: 'awaiting_approval', status: 'متوقف مؤقتًا بانتظار موافقتك' }))
     })
   }, [])
-  useEffect(() => { if (followRef.current && virtuosoRef.current) virtuosoRef.current.autoscrollToBottom() }, [view.messages, view.status])
+  useEffect(() => {
+    const working = view.phase === 'running' || view.phase === 'awaiting_approval' || view.phase === 'initializing' || view.phase === 'loading'
+    if (!(followRef.current || working) || !virtuosoRef.current) return
+    const frame = requestAnimationFrame(() => virtuosoRef.current?.autoscrollToBottom())
+    return () => cancelAnimationFrame(frame)
+  }, [view.messages, view.status, view.phase])
   useEffect(() => { if (view.todos.length > 0 && view.phase !== 'idle' && !planUserClosed.current) setPlanOpen(true) }, [view.todos.length, view.phase])
   useEffect(() => {
     const allDone = view.todos.length > 0 && view.todos.every((todo) => todo.status === 'completed' || todo.status === 'cancelled')
@@ -137,7 +142,10 @@ export function App() {
     if (event.type === 'todo' && event.todos) setSessions((items) => items.map((session) => session.id === event.sessionId ? { ...session, todos: event.todos! } : session))
     updateView(event.sessionId, (current) => {
       const withUsage = event.usage ? { ...current, usage: event.usage.total } : current
-      if (event.type === 'message' && event.message) return { ...withUsage, messages: upsertMessage(current.messages, event.message) }
+      if (event.type === 'message' && event.message) {
+        followRef.current = true
+        return { ...withUsage, messages: upsertMessage(current.messages, event.message) }
+      }
       if (event.type === 'stream' && event.stream) {
         const stream = event.stream
         if (stream.state === 'start') return { ...withUsage, streamingId: stream.id, messages: upsertMessage(current.messages, { id: stream.id, sessionId: event.sessionId, role: 'assistant', content: '', createdAt: Date.now() }) }
@@ -243,6 +251,7 @@ export function App() {
     if (!session || !text || waitingForApproval || view.phase === 'stopping' || view.phase === 'awaiting_approval' || sendLock.current.has(session.id)) return
     sendLock.current.add(session.id)
     const wasRunning = view.phase === 'running' || view.phase === 'interrupted'
+    const optimisticId = `optimistic-${session.id}-${Date.now()}`
     updateView(session.id, (current) => ({ ...current, phase: 'running', status: wasRunning ? 'تصل رسالتك للوكيل في الجولة التالية...' : 'يبدأ التنفيذ...', error: null, subagents: wasRunning ? current.subagents : [] }))
     setInput(''); followRef.current = true; setShowLatest(false)
     try {
@@ -256,10 +265,12 @@ export function App() {
         setSessions((items) => items.map((item) => item.id === updated.id ? updated : item))
         setSessionPrompt('')
       }
+      const optimisticMessage: Message = { id: optimisticId, sessionId: session.id, role: 'user', content: text, attachments: pendingAttachments.length ? pendingAttachments : undefined, createdAt: Date.now() }
+      updateView(session.id, (current) => ({ ...current, messages: upsertMessage(current.messages, optimisticMessage) }))
       await window.rCode.agent.send(session.id, text, pendingAttachments.length ? pendingAttachments : undefined)
       setPendingAttachments([])
     } catch (error) {
-      updateView(session.id, (current) => ({ ...current, phase: 'failed', status: wasRunning ? current.status : '', error: errorText(error) }))
+      updateView(session.id, (current) => ({ ...current, phase: 'failed', status: wasRunning ? current.status : '', error: errorText(error), messages: current.messages.filter((message) => message.id !== optimisticId) }))
       if (activeIdRef.current === session.id) setInput((current) => current || text)
     } finally { sendLock.current.delete(session.id) }
   }
@@ -320,9 +331,29 @@ export function App() {
 
   async function changeModel(modelId: string) {
     const previous = provider
-    const model = getGoModel(modelId)
-    setProvider({ ...provider, model: model.id, apiStyle: model.apiStyle, apiPath: model.apiStyle === 'chat' ? 'chat/completions' : model.apiStyle === 'responses' ? 'responses' : 'messages', contextWindow: model.contextWindow })
-    try { setProvider(await window.rCode.provider.save({ model: modelId, contextWindow: model.contextWindow })) } catch (error) { setProvider(previous); setAppError(errorText(error)) }
+    if (isCustomModelId(modelId)) {
+      const parsed = parseCustomModelId(modelId)
+      if (!parsed) return
+      try {
+        const config = await window.rCode.customProviders.getModelConfig(parsed.providerId, parsed.modelId)
+        if (!config) { setAppError('الموود أو النموذج غير موجود'); return }
+        setProvider({
+          ...provider,
+          model: modelId,
+          name: `custom/${config.model}`,
+          baseUrl: config.baseUrl,
+          apiPath: config.apiPath,
+          apiStyle: config.apiStyle,
+          contextWindow: config.contextWindow,
+          maxOutputTokens: config.maxOutputTokens,
+          hasApiKey: Boolean(config.apiKey),
+        })
+      } catch (error) { setProvider(previous); setAppError(errorText(error)) }
+    } else {
+      const model = getGoModel(modelId)
+      setProvider({ ...provider, model: model.id, name: 'OpenCode Go', apiStyle: model.apiStyle, apiPath: model.apiStyle === 'chat' ? 'chat/completions' : model.apiStyle === 'responses' ? 'responses' : 'messages', contextWindow: model.contextWindow })
+      try { setProvider(await window.rCode.provider.save({ model: modelId, contextWindow: model.contextWindow })) } catch (error) { setProvider(previous); setAppError(errorText(error)) }
+    }
   }
 
   async function loadPrompts() {
@@ -413,7 +444,7 @@ export function App() {
 	       {subagentsPage ? <SubagentsPage subagents={subagents} setSubagents={setSubagents} saveSubagent={saveSubagent} removeSubagent={removeSubagent} toggleSubagent={toggleSubagent} provider={provider}/> : !hasMessages ? <Welcome input={input} setInput={setInput} send={send} provider={provider} changeModel={changeModel} active={active} newSession={newSession} view={view} cancel={cancel} pendingAttachments={pendingAttachments} setPendingAttachments={setPendingAttachments} sessionPrompt={sessionPrompt} setSessionPrompt={setSessionPrompt}/> : <div className="chat-view">
         <div className="chat-messages-container">
           {runState?.status === 'interrupted' && <div className="resume-banner"><span>توقف التشغيل السابق عند الجولة {runState.step.toLocaleString('ar')}.</span><button onClick={() => void resume()}>استئناف التنفيذ</button></div>}
-	         {(() => { const convItems = groupConversation(view.messages, view.todos); const latestAssistantId = [...view.messages].reverse().find((m) => m.role === 'assistant')?.id ?? null; const working = view.phase === 'running' || view.phase === 'awaiting_approval' || view.phase === 'initializing' || view.phase === 'loading'; return <Virtuoso ref={virtuosoRef} className={`messages ${view.phase === 'stopping' ? 'agent-stopping' : ''} ${working ? 'is-working' : ''}`} data={convItems} followOutput={() => followRef.current ? 'smooth' : false} atBottomThreshold={130} atBottomStateChange={handleAtBottomChange} itemContent={(_, item) => item.kind === 'execution' ? <MemoExecutionStage messages={item.messages} todoId={item.todoId} todos={view.todos}/> : <MemoMessageBubbleWithActions message={item.message} streaming={view.streamingId === item.message.id} latest={item.message.id === latestAssistantId} onEdit={editUserMessage} onRegenerate={regenerateAssistant}/>} components={{ Footer: () => <>{view.subagents.length > 0 && <SubagentInline subagents={view.subagents}/>}<div ref={endRef}/></> }}/> })()}
+         {(() => { const convItems = groupConversation(view.messages, view.todos); const latestAssistantId = [...view.messages].reverse().find((m) => m.role === 'assistant')?.id ?? null; const working = view.phase === 'running' || view.phase === 'awaiting_approval' || view.phase === 'initializing' || view.phase === 'loading'; return <Virtuoso ref={virtuosoRef} className={`messages ${view.phase === 'stopping' ? 'agent-stopping' : ''} ${working ? 'is-working' : ''}`} data={convItems} followOutput={() => (followRef.current || working) ? 'smooth' : false} atBottomThreshold={130} atBottomStateChange={handleAtBottomChange} itemContent={(_, item) => item.kind === 'execution' ? <MemoExecutionStage messages={item.messages} todoId={item.todoId} todos={view.todos}/> : <MemoMessageBubbleWithActions message={item.message} streaming={view.streamingId === item.message.id} latest={item.message.id === latestAssistantId} onEdit={editUserMessage} onRegenerate={regenerateAssistant}/>} components={{ Footer: () => <>{view.subagents.length > 0 && <SubagentInline subagents={view.subagents}/>}<div className="messages-bottom-spacer"/><div ref={endRef}/></> }}/> })()}
           {showLatest && <button aria-label="الانتقال إلى أحدث الرسائل" className="jump-latest" onClick={jumpLatest}><ChevronDown size={14}/> أحدث الرسائل</button>}
            {planOpen && todoProgress.total > 0 && <div id="app-plan" className={`plan-float ${planExpanded ? 'expanded' : ''}`} role="complementary" aria-label="خطة العمل">
              <div className="plan-float-head">
@@ -721,7 +752,18 @@ export function ToolResultRenderer({ name, input, output }: { name: string; inpu
 // GitInitModal also imported from ./components/Modals
 
 
-function upsertMessage(messages: Message[], incoming: Message): Message[] { const found = messages.some((message) => message.id === incoming.id); return (found ? messages.map((message) => message.id === incoming.id ? incoming : message) : [...messages, incoming]).sort(compareMessages) }
+function upsertMessage(messages: Message[], incoming: Message): Message[] {
+  const found = messages.some((message) => message.id === incoming.id)
+  if (found) return messages.map((message) => message.id === incoming.id ? incoming : message).sort(compareMessages)
+  const optimisticIndex = incoming.role === 'user'
+    ? [...messages].reverse().findIndex((message) => message.id.startsWith('optimistic-') && message.role === 'user' && message.content === incoming.content && message.sessionId === incoming.sessionId)
+    : -1
+  if (optimisticIndex >= 0) {
+    const index = messages.length - 1 - optimisticIndex
+    return messages.map((message, messageIndex) => messageIndex === index ? incoming : message).sort(compareMessages)
+  }
+  return [...messages, incoming].sort(compareMessages)
+}
 function upsertSubagent(subagents: SubagentEvent[], incoming: SubagentEvent): SubagentEvent[] { const found = subagents.some((item) => item.id === incoming.id); return (found ? subagents.map((item) => item.id === incoming.id ? incoming : item) : [...subagents, incoming]) }
 function mergeMessages(loaded: Message[], live: Message[]): Message[] { const values = new Map(loaded.map((message) => [message.id, message])); for (const message of live) values.set(message.id, message); return [...values.values()].sort(compareMessages) }
 function compareMessages(a: Message, b: Message): number { if (a.sequence !== undefined && b.sequence !== undefined) return a.sequence - b.sequence; return a.createdAt - b.createdAt || a.id.localeCompare(b.id) }

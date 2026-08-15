@@ -476,6 +476,22 @@ test('patch_file is exposed to the model with the implementation schema', () => 
   assert.equal(definition.function.parameters.additionalProperties, false)
 })
 
+test('full permission shell can use an external working directory when explicitly enabled', async (t) => {
+  const root = await fixture(t)
+  const outside = await mkdtemp(join(tmpdir(), 'r-code-unrestricted-'))
+  t.after(() => rm(outside, { recursive: true, force: true }))
+
+  const result = JSON.parse(await executeTool('run_powershell', { command: 'Write-Output unrestricted', cwd: outside }, { ...context(root), unrestrictedShell: true, fullPowerShell: true }))
+  assert.equal(result.ok, true)
+  assert.match(result.data.output, /unrestricted/)
+})
+
+test('preview_screenshot is exposed to the model', () => {
+  const definition = toolDefinitions.find((item) => item.function.name === 'preview_screenshot')
+  assert.ok(definition, 'preview_screenshot must be present in toolDefinitions')
+  assert.match(definition.function.description, /captureSource|visualState|consoleCaptured/)
+})
+
 test('patch_file applies multiple edits in a single call from bottom to top and verifies expected', async (t) => {
   const root = await fixture(t)
   const file = join(root, 'multi.ts')

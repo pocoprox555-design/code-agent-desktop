@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { WebContents } from 'electron'
 import { AppDatabase } from '../src/main/database'
-import { AgentRunner, forceCompactForOverflow, projectToolInput, smartCompressForContinuation } from '../src/main/agent'
+import { AgentRunner, forceCompactForOverflow, formatInvalidToolCorrection, projectToolInput, smartCompressForContinuation } from '../src/main/agent'
 import type { AgentEvent, ProviderConfig } from '../src/shared/types'
 import type { ProviderStore } from '../src/main/provider-store'
 import type { requestModel } from '../src/main/provider'
+import type { ToolDefinition } from '../src/main/provider'
 import { MAIN_CHAT_PROFILE, type AgentProfile } from '../src/main/agent-profile'
 
 function testProvider(): ProviderStore {
@@ -57,6 +58,32 @@ test('tool input projection receipts large write variants without mutating origi
   assert.doesNotMatch(JSON.stringify(projected), /secretsecret/)
   assert.match(JSON.stringify(projectToolInput('append_file', { path: 'a.ts', content })), /sha256/)
   assert.match(JSON.stringify(projectToolInput('patch_file', { path: 'a.ts', patches: [{ new_lines: content }] })), /reference/)
+})
+
+test('invalid tool correction shows the actual input and an exact schema example', () => {
+  const definition: ToolDefinition = {
+    type: 'function',
+    function: {
+      name: 'todo_write',
+      description: 'تحديث الخطة',
+      parameters: {
+        type: 'object',
+        required: ['items'],
+        properties: {
+          items: {
+            type: 'array',
+            minItems: 0,
+            items: { type: 'object', required: ['content'], properties: { content: { type: 'string' } } }
+          }
+        }
+      }
+    }
+  }
+  const correction = formatInvalidToolCorrection({ id: 'todo-1', name: 'todo_write', arguments: '{"todos":[{"content":"x"}]}' }, 'الحقل المطلوب مفقود: items', definition)
+  assert.match(correction, /المدخلات التي أرسلتها فعليًا/)
+  assert.match(correction, /"todos"/)
+  assert.match(correction, /"items": \[/)
+  assert.match(correction, /"content": "النص الفعلي الكامل"/)
 })
 
 function approvalModel(command: string): typeof requestModel {
@@ -286,21 +313,21 @@ test('AgentRunner accepts the complete Java diagnostics command without a Get-Co
   await runner.shutdown(); db.close()
 })
 
-test('AgentRunner persists policy failures as TOOL_ERROR and failed audit events', async (t) => {
+test('AgentRunner allows unrestricted PowerShell in full permission mode', async (t) => {
   const db = new AppDatabase(await databasePath(t))
   const session = db.createSession(process.cwd())
   db.updateSession(session.id, { permissionMode: 'full' })
   let calls = 0
   const model: typeof requestModel = async () => {
     calls++
-    if (calls === 1) return { text: 'سأختبر الرفض', toolCalls: [{ id: 'policy-failure', name: 'run_powershell', arguments: JSON.stringify({ command: 'Invoke-Expression "Write-Output blocked"', cwd: '.' }) }], finishReason: 'stop', usage: { input: 10, output: 4 } }
-    return { text: 'تم تسجيل الرفض', toolCalls: [], finishReason: 'stop', usage: { input: 10, output: 4 } }
+    if (calls === 1) return { text: 'سأختبر التنفيذ', toolCalls: [{ id: 'unrestricted-shell', name: 'run_powershell', arguments: JSON.stringify({ command: 'Invoke-Expression "Write-Output unrestricted"', cwd: '.' }) }], finishReason: 'stop', usage: { input: 10, output: 4 } }
+    return { text: 'تم التنفيذ', toolCalls: [], finishReason: 'stop', usage: { input: 10, output: 4 } }
   }
   const runner = new AgentRunner(db, testProvider(), () => null, model)
-  await runner.send(session.id, 'اختبر فشل السياسة')
+  await runner.send(session.id, 'اختبر التنفيذ الكامل')
   await waitForRunToFinish(runner)
-  assert.match(toolMessages(db, session.id).join('\n'), /TOOL_ERROR/)
-  assert.ok(db.listAudit(100).some((event) => event.action === 'run_powershell' && event.outcome === 'failed'))
+  assert.match(toolMessages(db, session.id).join('\n'), /unrestricted/)
+  assert.ok(db.listAudit(100).some((event) => event.action === 'run_powershell' && event.outcome === 'completed'))
   await runner.shutdown(); db.close()
 })
 

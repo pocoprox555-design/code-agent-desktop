@@ -18,6 +18,10 @@ export interface PreviewCapture {
   consoleWarnings: string[]
   elementStats: { images: number; links: number; buttons: number; inputs: number; headings: number }
   screenshot?: { path: string; width: number; height: number; bytes: number }
+  captureSource: 'visible-preview' | 'hidden-window'
+  consoleCaptured: boolean
+  visualState?: { mostlyBlank: boolean; whiteRatio: number; darkRatio: number }
+  note?: string
   capturedAt: number
 }
 
@@ -100,6 +104,9 @@ export async function capturePreviewPage(url: string, saveScreenshotTo: string):
             headings: info?.headings ?? 0,
           },
           ...(screenshot ? { screenshot } : {}),
+          captureSource: 'hidden-window',
+          consoleCaptured: true,
+          note: 'تعذر تصوير إطار المعاينة المفتوح؛ هذه لقطة من نافذة خفية مستقلة لنفس الرابط وقد تختلف حالتها الزمنية عما يراه المستخدم.',
           capturedAt: Date.now(),
         })
       } catch (error) {
@@ -125,4 +132,70 @@ export async function capturePreviewPage(url: string, saveScreenshotTo: string):
     })
     win.loadURL(url).catch((error) => fail(error instanceof Error ? error : new Error(String(error))))
   })
+}
+
+export async function captureVisiblePreview(
+  webContents: import('electron').WebContents,
+  url: string,
+  saveScreenshotTo: string,
+): Promise<PreviewCapture | null> {
+  if (webContents.isDestroyed()) return null
+  const expectedUrl = JSON.stringify(new URL(url).href)
+  const bounds = await webContents.executeJavaScript(`(() => {
+    const frame = document.querySelector('.build-preview-panel .preview-iframe')
+    if (!(frame instanceof HTMLIFrameElement)) return null
+    try { if (new URL(frame.src).href !== ${expectedUrl}) return null } catch { return null }
+    const rect = frame.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) return null
+    return {
+      x: Math.max(0, Math.round(rect.x)),
+      y: Math.max(0, Math.round(rect.y)),
+      width: Math.max(1, Math.round(Math.min(rect.width, innerWidth - Math.max(0, rect.x)))),
+      height: Math.max(1, Math.round(Math.min(rect.height, innerHeight - Math.max(0, rect.y)))),
+    }
+  })()`, true).catch(() => null) as { x: number; y: number; width: number; height: number } | null
+  if (!bounds?.width || !bounds.height) return null
+
+  const image = await webContents.capturePage(bounds)
+  if (image.isEmpty()) return null
+  const resized = image.getSize().width > 1100 ? image.resize({ width: 1100 }) : image
+  const visualState = inspectVisualState(resized)
+  const buffer = resized.toJPEG(82)
+  await fs.writeFile(saveScreenshotTo, buffer)
+  const size = resized.getSize()
+  return {
+    url,
+    title: 'المعاينة المفتوحة داخل صفحة Build',
+    visibleText: '',
+    consoleErrors: [],
+    consoleWarnings: [],
+    elementStats: { images: 0, links: 0, buttons: 0, inputs: 0, headings: 0 },
+    screenshot: { path: saveScreenshotTo, width: size.width, height: size.height, bytes: buffer.byteLength },
+    captureSource: 'visible-preview',
+    consoleCaptured: false,
+    visualState,
+    note: visualState.mostlyBlank
+      ? 'هذه لقطة الإطار الظاهر أمام المستخدم حرفيًا، وتبدو شبه فارغة. لا تدّع وجود عناصر أو أخطاء console غير ظاهرة؛ console غير ملتقط في هذا المسار.'
+      : 'هذه لقطة الإطار الظاهر أمام المستخدم حرفيًا. بيانات console غير متاحة في هذا المسار، فلا تعتبر القوائم الفارغة دليلًا على عدم وجود أخطاء.',
+    capturedAt: Date.now(),
+  }
+}
+
+function inspectVisualState(image: import('electron').NativeImage): { mostlyBlank: boolean; whiteRatio: number; darkRatio: number } {
+  const bitmap = image.toBitmap()
+  let samples = 0
+  let white = 0
+  let dark = 0
+  for (let index = 0; index + 3 < bitmap.length; index += 4 * 97) {
+    const blue = bitmap[index] ?? 0
+    const green = bitmap[index + 1] ?? 0
+    const red = bitmap[index + 2] ?? 0
+    const alpha = bitmap[index + 3] ?? 255
+    samples++
+    if (alpha < 16 || red > 245 && green > 245 && blue > 245) white++
+    if (alpha >= 16 && red < 20 && green < 20 && blue < 20) dark++
+  }
+  const whiteRatio = samples ? white / samples : 0
+  const darkRatio = samples ? dark / samples : 0
+  return { mostlyBlank: whiteRatio > 0.96 || darkRatio > 0.985, whiteRatio: Number(whiteRatio.toFixed(3)), darkRatio: Number(darkRatio.toFixed(3)) }
 }
