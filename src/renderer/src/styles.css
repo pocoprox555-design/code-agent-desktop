@@ -1748,7 +1748,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   top: 65px;
   inset-inline-end: 20px;
   inset-inline-start: auto;
-  width: 320px;
+  width: 310px;
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 160px);
   background: var(--surface);
