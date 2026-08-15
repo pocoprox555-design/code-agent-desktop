@@ -9,7 +9,7 @@ import { PreviewPanel } from './PreviewPanel'
 import { DeployDialog } from './DeployDialog'
 import { BuildChat } from './BuildChat'
 import { FileSidebar } from './FileSidebar'
-import { FolderOpen, Plus, AlertTriangle, LoaderCircle, Trash2, MessageSquare } from 'lucide-react'
+import { FolderOpen, Plus, AlertTriangle, LoaderCircle, Trash2, MessageSquare, ArrowRight } from 'lucide-react'
 import type { ProviderSettings } from '../../../shared/types'
 import { goProviderConfig } from '../../../shared/models'
 
@@ -138,6 +138,7 @@ export function BuildPage({ onClose }: Props) {
 
   if (phase === 'home' || !project) return frame(
     <div className="build-empty">
+      <button className="build-back-btn" onClick={handleClose} aria-label="العودة للشات الرئيسي"><ArrowRight size={16}/> العودة للشات</button>
       <div className="build-empty-content">
         <div className="build-empty-icon"><svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
         <h2>ابنِ موقعك</h2>
