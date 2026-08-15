@@ -947,7 +947,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .message.user { text-align: right; }
 .message.assistant { padding: 4px 0; display: flex; align-items: flex-start; gap: 8px; }
 .msg-role { display: flex; align-items: flex-start; padding-top: 2px; color: var(--text-2); flex-shrink: 0; }
-.chat-bot-icon { width: 19px; height: 19px; display: block; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .4)); }
+.chat-bot-icon { width: 26px; height: 26px; display: block; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .4)); }
 .chat-bot-eye { fill: #38bdf8; filter: drop-shadow(0 0 2px rgba(56, 189, 248, .95)); }
 /* العيون تتحرك فقط أثناء عمل الوكيل وعلى آخر رسالة مساعد — وتتوقف بعد الرد،
    بنفس keyframes روبوت شات البناء تمامًا */
