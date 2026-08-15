@@ -1,6 +1,6 @@
 # AGENTS.md — دليل الوكيل داخل هذا المشروع
 
-هذا المشروع هو التطبيق الذي يعمل به الوكيل نفسه: **Rahma Code Agent** (Electron + React + TypeScript). عند العمل عليه التزم بهذه البنية والقواعد.
+هذا المشروع هو التطبيق الذي يعمل به الوكيل نفسه: **Code Agent** (Electron + React + TypeScript). عند العمل عليه التزم بهذه البنية والقواعد.
 
 ## البنية
 - `src/main/` — عملية الوكيل الرئيسية:
@@ -10,6 +10,7 @@
   - `provider.ts` — طلبات مزود OpenCode Go (Chat/Responses/Anthropic).
   - `provider-store.ts` — تخزين مفتاح API مشفرًا عبر DPAPI.
   - `database.ts` — SQLite محلي للجلسات والرسائل والسجل.
+  - `preview-capture.ts` — التقاط لقطة شاشة وconsole من خادم المعاينة عبر نافذة Electron خفية (أداة `preview_screenshot` في Build).
 - `src/preload/index.ts` — جسر contextBridge الآمن للواجهة.
 - `src/renderer/` — واجهة React عربية (`App.tsx` + `styles.css`).
 - `src/shared/` — أنواع مشتركة ونماذج `GO_MODELS`.

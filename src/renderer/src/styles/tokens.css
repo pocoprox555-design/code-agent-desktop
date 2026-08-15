@@ -1,0 +1,130 @@
+/**
+ * Design Tokens — CSS Variables (P3-03)
+ * تدعم السمة الداكنة (الافتراضية) والفاتحة
+ * لا تلمس أي محددات CSS موجودة — فقط تعرّف متغيرات
+ */
+
+/* ── السمة الداكنة (الافتراضية) ── */
+:root,
+[data-theme="dark"] {
+  /* سطح المكتب */
+  --bg-primary: #0d1017;
+  --bg-secondary: #131620;
+  --bg-tertiary: #1a1d2a;
+  --bg-elevated: #1f2231;
+
+  /* نص */
+  --text-primary: #e5e7eb;
+  --text-secondary: #7a7f95;
+  --text-muted: #5a5f72;
+  --text-accent: #7e9cf0;
+
+  /* حدود */
+  --border-color: #2a2d3a;
+  --border-light: #1f2231;
+
+  /* ألوان */
+  --color-blue: #7e9cf0;
+  --color-green: #5fd9a4;
+  --color-red: #f47a8c;
+  --color-orange: #f0a84e;
+  --color-purple: #b07cf0;
+
+  /* تفاعلات */
+  --hover-bg: rgba(100, 130, 255, 0.08);
+  --active-bg: rgba(100, 130, 255, 0.14);
+  --focus-ring: rgba(126, 156, 240, 0.4);
+
+  /* كود */
+  --code-bg: #1a1d2a;
+  --inline-code-bg: rgba(110, 120, 140, 0.18);
+
+  /* مدخلات */
+  --input-bg: #1a1d2a;
+  --input-border: #2a2d3a;
+  --input-focus-border: #7e9cf0;
+
+  /* أزرار */
+  --btn-primary-bg: #7e9cf0;
+  --btn-primary-text: #0d1017;
+  --btn-ghost-hover: rgba(100, 130, 255, 0.08);
+
+  /* شريط جانبي */
+  --sidebar-bg: #0d1017;
+  --sidebar-hover: rgba(100, 130, 255, 0.06);
+
+  /* ظلال */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+
+  /* عناصر خاصة */
+  --kbd-bg: rgba(120, 130, 160, 0.12);
+  --scrollbar-thumb: #2a2d3a;
+  --scrollbar-track: transparent;
+}
+
+/* ── السمة الفاتحة ── */
+[data-theme="light"] {
+  --bg-primary: #f8f9fc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f2f5;
+  --bg-elevated: #ffffff;
+
+  --text-primary: #1a1d2e;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --text-accent: #4f6fd4;
+
+  --border-color: #e5e7eb;
+  --border-light: #f0f2f5;
+
+  --color-blue: #4f6fd4;
+  --color-green: #10b981;
+  --color-red: #ef4444;
+  --color-orange: #f59e0b;
+  --color-purple: #8b5cf6;
+
+  --hover-bg: rgba(79, 111, 212, 0.06);
+  --active-bg: rgba(79, 111, 212, 0.12);
+  --focus-ring: rgba(79, 111, 212, 0.3);
+
+  --code-bg: #f0f2f5;
+  --inline-code-bg: rgba(100, 110, 140, 0.12);
+
+  --input-bg: #ffffff;
+  --input-border: #d1d5db;
+  --input-focus-border: #4f6fd4;
+
+  --btn-primary-bg: #4f6fd4;
+  --btn-primary-text: #ffffff;
+  --btn-ghost-hover: rgba(79, 111, 212, 0.06);
+
+  --sidebar-bg: #f0f2f5;
+  --sidebar-hover: rgba(79, 111, 212, 0.05);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.12);
+
+  --kbd-bg: rgba(100, 110, 140, 0.08);
+  --scrollbar-thumb: #d1d5db;
+  --scrollbar-track: #f0f2f5;
+}
+
+/* ── تطبيق المتغيرات على العناصر الأساسية (فوق styles.css الموجود) ── */
+html {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* تمرير مخصص */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+
+/* تركيز */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

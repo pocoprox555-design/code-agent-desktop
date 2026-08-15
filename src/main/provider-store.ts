@@ -27,6 +27,14 @@ export class ProviderStore {
 
   getSettings(): ProviderSettings { return toSettings(this.get()) }
 
+  getForModel(model: string): ProviderConfig {
+    const current = this.get()
+    if (!modelIds.has(model)) throw new Error('النموذج المحدد غير معروف')
+    const config = goProviderConfig(current.apiKey, model)
+    if (current.model === model) config.contextWindow = current.contextWindow
+    return config
+  }
+
   resolve(update: ProviderUpdate): ProviderConfig {
     const current = this.get()
     if (!modelIds.has(update.model)) throw new Error('النموذج المحدد غير معروف')

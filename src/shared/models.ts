@@ -87,7 +87,7 @@ export function goProviderConfig(apiKey = '', modelId = DEFAULT_GO_MODEL.id): Pr
     apiStyle: model.apiStyle,
     model: model.id,
     contextWindow: model.contextWindow,
-    maxOutputTokens: 32_000,
+    maxOutputTokens: 131_072,
     apiKey
   }
 }

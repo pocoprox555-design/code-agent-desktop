@@ -6,3 +6,20 @@ release-*/
 *.log
 *.tmp/
 .DS_Store
+
+# AI assistant config folders
+.agents/
+.claude/
+.codex/
+.gemini/
+.mimosa/
+.zcode/
+
+# Debug files
+debug-shell*.ts
+
+# Electron runtime cache
+.electron-runtime/
+
+# Build artifacts in root
+/index.js

@@ -4,7 +4,7 @@ import { createInterface, type Interface } from 'node:readline'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import type { ToolDefinition } from './provider'
-import { isBlockedHost } from './tools'
+import { assertPublicHttpsUrl, requestPublicHttps } from './public-network'
 
 interface McpLocalConfig { command: string; args: string[]; env: Record<string, string> }
 interface McpRemoteConfig { url: string; headers?: Record<string, string> }
@@ -116,7 +116,7 @@ class McpConnection {
     this.child.stderr.on('data', (chunk: Buffer) => { this.stderrTail = `${this.stderrTail}${chunk.toString('utf8')}`.slice(-65_536) })
     const closed = new Promise<Error>((resolve) => { this.child.once('error', (error) => { this.rejectPending(error instanceof Error ? error : new Error(String(error))); resolve(error instanceof Error ? error : new Error(String(error))) }); this.child.once('close', (code) => { const error = new Error(`أغلق خادم MCP الاتصال (${code ?? -1})`); this.rejectPending(error); resolve(error) }) })
     this.closed = closed
-    const response = await this.request('initialize', { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'Rahma Code Agent', version: '0.5.0' } }, signal)
+    const response = await this.request('initialize', { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'Code Agent', version: '0.5.0' } }, signal)
     if (!response) throw new Error('استجابة تهيئة MCP فارغة')
     this.notify('notifications/initialized', {})
   }
@@ -126,7 +126,8 @@ class McpConnection {
   async callTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<string> {
     const result = await this.request('tools/call', { name, arguments: input }, signal)
     const content = Array.isArray(result?.content) ? result.content.map((part: any) => part?.type === 'text' ? String(part.text ?? '') : JSON.stringify(part)).join('\n') : result?.structuredContent ? JSON.stringify(result.structuredContent) : ''
-    return JSON.stringify({ ok: !result?.isError, data: { content: content.slice(0, 500_000), isError: Boolean(result?.isError) } }, null, 2)
+    if (result?.isError) return JSON.stringify({ ok: false, error: { code: 'MCP_TOOL_ERROR', message: content.slice(0, 500_000) || `فشلت أداة MCP: ${name}` } }, null, 2)
+    return JSON.stringify({ ok: true, data: { content: content.slice(0, 500_000), truncated: content.length > 500_000 } }, null, 2)
   }
 
   async close(): Promise<void> {
@@ -167,9 +168,8 @@ class RemoteMcpConnection implements McpConnectionLike {
 
   async start(signal: AbortSignal): Promise<void> {
     const url = new URL(this.config.url)
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('يسمح فقط بروابط MCP عن بُعد HTTP/HTTPS')
-    if (isBlockedHost(url.hostname)) throw new Error('لا يسمح بوصول خادم MCP عن بُعد إلى شبكة محلية أو عنوان خاص')
-    const response = await this.request('initialize', { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'Rahma Code Agent', version: '0.5.0' } }, signal)
+    await assertPublicHttpsUrl(url)
+    const response = await this.request('initialize', { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'Code Agent', version: '0.5.0' } }, signal)
     if (!response) throw new Error('استجابة تهيئة MCP عن بُعد فارغة')
     this.alive = true
     try { await this.post({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }, signal) } catch { /* اختياري */ }
@@ -207,7 +207,7 @@ class RemoteMcpConnection implements McpConnectionLike {
     signal.addEventListener('abort', abort, { once: true })
     const timer = setTimeout(() => controller.abort(new Error('انتهت مهلة طلب MCP عن بُعد')), MCP_REQUEST_TIMEOUT_MS)
     try {
-        const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(this.sessionId ? { 'Mcp-Session-Id': this.sessionId } : {}), ...this.config.headers }, body: JSON.stringify(payload), signal: controller.signal })
+        const response = await requestPublicHttps(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(this.sessionId ? { 'Mcp-Session-Id': this.sessionId } : {}), ...this.config.headers }, body: JSON.stringify(payload), signal: controller.signal }, { maxResponseBytes: 5_000_000, maxRedirects: 3 })
         if (!response.ok) throw new Error(`فشل خادم MCP عن بُعد (${response.status}): ${(await readBoundedResponse(response, 1_000_000)).slice(0, 1000)}`)
         const sessionId = response.headers.get('mcp-session-id')
         if (sessionId) this.sessionId = sessionId
@@ -284,7 +284,11 @@ async function readConfigFile(filePath: string | undefined, label: string): Prom
 }
 
 function objectStrings(value: unknown): Record<string, string> { if (!value || typeof value !== 'object' || Array.isArray(value)) return {}; return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')) }
-function safeEnvironment(extra: Record<string, string>): NodeJS.ProcessEnv { return { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: process.env.USERPROFILE, ComSpec: process.env.ComSpec, PATHEXT: process.env.PATHEXT, ...extra } }
+function safeEnvironment(extra: Record<string, string>): NodeJS.ProcessEnv {
+  const reserved = new Set(['path', 'systemroot', 'windir', 'comspec', 'pathext', 'temp', 'tmp', 'userprofile'])
+  const custom = Object.fromEntries(Object.entries(extra).filter(([key]) => !reserved.has(key.toLowerCase())))
+  return { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: process.env.USERPROFILE, ComSpec: process.env.ComSpec, PATHEXT: process.env.PATHEXT, ...custom }
+}
 function exposedName(server: string, tool: string): string { const normalized = tool.replaceAll('-', '_'); return server === 'tavily' ? normalized.startsWith('tavily_') ? normalized : `tavily_${normalized}` : `mcp_${server.replaceAll(/[^a-zA-Z0-9_]/g, '_')}_${normalized}` }
 function commandArgument(value: string): string { return /[\s"&|<>^]/.test(value) ? `"${value.replace(/["^]/g, (character) => `^${character}`)}"` : value }
 function redactMcpText(value: string): string { return value.replace(/((?:tavily)?api[_-]?key=)[^&\s]+/gi, '$1[محجوب]').replace(/((?:api[_-]?key|token|secret)\s*[:=]\s*)[^\s&]+/gi, '$1[محجوب]') }
