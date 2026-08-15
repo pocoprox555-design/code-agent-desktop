@@ -1745,7 +1745,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    ============================================================ */
 .plan-float {
   position: fixed;
-  top: 120px;
+  top: 80px;
   inset-inline-end: 20px;
   inset-inline-start: auto;
   width: 320px;
