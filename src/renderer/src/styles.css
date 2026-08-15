@@ -578,48 +578,36 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* ============================================================
    Composer
    ============================================================ */
-.composer-wrap { width: min(780px, 100%); margin: 0 auto 0 340px; position: relative; z-index: 2; }
+.composer-wrap {
+  flex: 0 0 auto;
+  width: 100%;
+  margin: 0;
+  position: relative;
+  padding: 8px 0 12px;
+  background: transparent;
+}
+.composer-wrap .attachment-previews {
+  margin-bottom: 6px;
+}
 .composer {
   width: 100%;
-  margin: 0 auto;
-  border: 1px solid var(--border);
+  border: none;
+  box-shadow: none;
   border-radius: 12px;
   background: var(--bg-2);
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  transition: all .2s ease;
   position: relative;
 }
-.composer::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: 16px;
-  padding: 1px;
-  background: linear-gradient(135deg, transparent 0%, rgba(163, 163, 163, 0.3) 50%, transparent 100%);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0;
-  transition: opacity .2s ease;
-  pointer-events: none;
-}
-.composer:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-.composer:focus-within::before { opacity: 1; }
 
 .composer textarea {
   width: 100%;
-  min-height: 44px;
-  max-height: 160px;
+  height: 44px;
   resize: none;
   padding: 10px 14px 4px;
   line-height: 1.55;
   font-size: 13px;
   color: var(--text);
   background: transparent;
+  overflow-y: auto;
 }
 .composer textarea::placeholder { color: var(--text-4); }
 
@@ -647,23 +635,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .composer-stat svg { opacity: 0.7; }
 .context-compacted { color: var(--orange); background: var(--orange-soft); }
 
-.composer-status {
-  min-height: 28px;
-  padding: 6px 12px;
-  border-top: 1px solid var(--border);
-  color: var(--text-2);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  background: var(--bg-3);
-  animation: composer-status-in .2s ease;
-}
-@keyframes composer-status-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: none; }
-}
-.composer-status .spin { color: var(--accent); flex-shrink: 0; }
 
 .perm-pill {
   display: flex;
@@ -871,7 +842,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .session-error {
   margin: 0 0 6px;
   padding: 7px 10px;
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  border: none;
   border-radius: 7px;
   background: var(--red-soft);
   color: var(--red);
@@ -910,33 +881,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    Chat view
    ============================================================ */
 .chat-view {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   position: relative;
+  background: var(--chat-bg);
   padding-inline-start: 24px;
   padding-inline-end: 24px;
-  background: var(--chat-bg);
 }
-.chat-view::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 60px;
-  background: linear-gradient(to top, var(--chat-bg) 0%, transparent 100%);
-  pointer-events: none;
-  z-index: 1;
-}
-.messages {
-  flex: 1;
+
+.chat-messages-container {
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 20px 24px 100px;
+  padding: 20px 24px 12px;
   box-sizing: border-box;
-  scroll-padding-bottom: 100px;
+}
+
+.messages {
+  min-height: 0;
+  height: auto;
+  overflow: visible;
 }
 .messages > * { max-width: 700px; }
 
@@ -1491,7 +1459,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   position: relative;
   flex: 0 0 auto;
   border-radius: 8px;
-  border: 1px solid var(--border);
+  border: none;
   background: var(--surface);
   overflow: hidden;
 }
@@ -1724,7 +1692,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .topbar-right { gap: 5px; }
 .model-select-btn, .mode-pill, .git-pill { height: 24px; border-radius: 6px; }
 /* .messages receives its paddings in the Chat view section above */
-.composer { border-radius: 14px; background: var(--surface); }
 .welcome-center h1 { font-size: 25px; }
 .welcome-center p { color: var(--text-2); }
 
