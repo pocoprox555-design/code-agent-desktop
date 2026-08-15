@@ -895,17 +895,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .chat-messages-container {
   flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   overflow-x: hidden;
   padding: 20px 24px 12px;
   box-sizing: border-box;
 }
 
 .messages {
+  flex: 1 1 0;
   min-height: 0;
   height: auto;
-  overflow: visible;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
+.messages-bottom-spacer { height: 20px; flex: 0 0 20px; }
 .messages > * { max-width: 700px; }
 
 /* ============================================================
@@ -1740,14 +1745,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    ============================================================ */
 .plan-float {
   position: fixed;
-  top: auto;
-  bottom: 12px;
-  inset-inline-end: 14px;
-  width: 190px;
-  max-width: calc(100vw - 24px);
+  top: 120px;
+  inset-inline-end: auto;
+  inset-inline-start: 20px;
+  width: 320px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 160px);
   background: var(--surface);
   border: 1px solid var(--border-light);
-  border-radius: 9px;
+  border-radius: 12px;
   box-shadow: 0 14px 34px rgba(0, 0, 0, .34);
   z-index: 8;
   overflow: hidden;
@@ -1853,22 +1859,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 
 .plan-float-list {
-  max-height: 246px;
+  max-height: 420px;
   overflow-y: auto;
-  padding: 5px 6px 6px;
+  padding: 6px 8px 8px;
 }
-.plan-float-list .todo-body { padding: 0; max-height: none; gap: 2px; }
+.plan-float-list .todo-body { padding: 0; max-height: none; gap: 4px; }
 .plan-float-list .todo-item {
-  min-height: 25px;
-  padding: 3px 5px;
-  gap: 4px;
+  min-height: 32px;
+  padding: 5px 8px;
+  gap: 6px;
   border: 1px solid transparent;
   background: rgba(163, 163, 163, .045);
-  font-size: 10px;
+  font-size: 11.5px;
 }
 .plan-float-list .todo-item:hover { background: var(--accent-soft); border-color: rgba(163, 163, 163, 0.12); }
-.plan-float-list .todo-content { line-height: 1.35; }
-.plan-float-list .todo-priority { font-size: 8px; padding: 1px 4px; }
+.plan-float-list .todo-content { line-height: 1.4; }
+.plan-float-list .todo-priority { font-size: 9px; padding: 1px 5px; }
 
 .todo-index {
   display: inline-flex;
