@@ -11,6 +11,7 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,7 +22,16 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Build and publish
-        run: npm run check && npx electron-builder --win nsis --publish always
+      - name: Verify and build
+        run: npm run check && npx electron-builder --win nsis --publish never --config.directories.output=release-latest
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release-latest/Code-Agent-*-Setup.exe
+            release-latest/latest.yml
+            release-latest/*.blockmap
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
