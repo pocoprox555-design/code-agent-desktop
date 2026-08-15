@@ -877,6 +877,59 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-error button { cursor: pointer; padding: 4px; border-radius: 5px; display: grid; place-items: center; }
 .app-error button:hover { background: var(--red-soft); }
 
+.update-toast {
+  position: fixed;
+  z-index: 50;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, calc(100% - 32px));
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 12px;
+  background: var(--surface, #1a1a2e);
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  animation: toastSlideIn .3s ease;
+}
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-12px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.update-toast-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text, #e5e5e5);
+}
+.update-toast-icon { font-size: 16px; }
+.update-toast-actions { display: flex; gap: 8px; }
+.update-toast-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all .15s;
+}
+.update-toast-btn.install {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+}
+.update-toast-btn.install:hover { background: #2563eb; }
+.update-toast-btn.install:disabled { opacity: 0.6; cursor: not-allowed; }
+.update-toast-btn.dismiss {
+  background: var(--surface-2, rgba(255,255,255,0.06));
+  color: var(--text-2, #a3a3a3);
+  border: 1px solid var(--border-light, rgba(255,255,255,0.08));
+}
+.update-toast-btn.dismiss:hover { background: var(--surface-3, rgba(255,255,255,0.1)); color: var(--text, #e5e5e5); }
+
 /* ============================================================
    Chat view
    ============================================================ */

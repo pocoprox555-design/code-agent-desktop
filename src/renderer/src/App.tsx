@@ -71,6 +71,7 @@ export function App() {
   const [subagents, setSubagents] = useState<Subagent[]>([])
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null)
   const [cancelledRunIds, setCancelledRunIds] = useState<Set<string>>(new Set())
+  const [updateNotification, setUpdateNotification] = useState<{ version: string; installing: boolean } | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const followRef = useRef(true)
@@ -101,6 +102,13 @@ export function App() {
     return events.onApproval((request) => {
     setApprovals((items) => items.some((item) => item.id === request.id) ? items : [...items, request])
     updateView(request.sessionId, (current) => current.runId && request.runId && current.runId !== request.runId ? current : ({ ...current, runId: request.runId ?? current.runId, phase: 'awaiting_approval', status: 'متوقف مؤقتًا بانتظار موافقتك' }))
+    })
+  }, [])
+  useEffect(() => {
+    const events = window.rCode?.events
+    if (!events) return
+    return events.onUpdateAvailable((info) => {
+      setUpdateNotification({ version: info.version, installing: false })
     })
   }, [])
   useEffect(() => {
@@ -463,6 +471,7 @@ export function App() {
     {settings && <SettingsModal value={provider} close={() => setSettings(false)} saved={setProvider}/>} 
     {approval && <ApprovalModal request={approval} session={sessions.find((item) => item.id === approval.sessionId)} position={`طلب 1 من ${approvals.length}`} busy={answeringApproval === approval.id} answer={(allowed, remember) => void answerApproval(approval, allowed, remember)}/>} 
     {gitPrompt && <GitInitModal workspace={gitPrompt.workspace} create={(initGit) => void createSessionWithGit(gitPrompt.workspace, initGit)} close={() => setGitPrompt(null)}/>} 
+    {updateNotification && <div className="update-toast"><div className="update-toast-content"><span className="update-toast-icon">🆕</span><span>يتوفر تحديث جديد <strong>v{updateNotification.version}</strong></span></div><div className="update-toast-actions"><button className="update-toast-btn install" disabled={updateNotification.installing} onClick={async () => { setUpdateNotification((prev) => prev ? { ...prev, installing: true } : prev); try { await window.rCode.updates.install() } catch { setUpdateNotification(null) } }}>{updateNotification.installing ? 'جارٍ التثبيت...' : 'تثبيت الآن'}</button><button className="update-toast-btn dismiss" onClick={() => setUpdateNotification(null)}>لاحقًا</button></div></div>}
   </main>
 }
 

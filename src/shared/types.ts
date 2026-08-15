@@ -300,7 +300,7 @@ export interface AppApi {
     update(id: string, input: Partial<Omit<Subagent, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Subagent>
     remove(id: string): Promise<void>
   }
-  	events: { onAgent(callback: (event: AgentEvent) => void): () => void; onApproval(callback: (request: ApprovalRequest) => void): () => void; onBuildAgent(callback: (event: AgentEvent) => void): () => void; onBuildApproval(callback: (request: ApprovalRequest) => void): () => void }
+  	events: { onAgent(callback: (event: AgentEvent) => void): () => void; onApproval(callback: (request: ApprovalRequest) => void): () => void; onBuildAgent(callback: (event: AgentEvent) => void): () => void; onBuildApproval(callback: (request: ApprovalRequest) => void): () => void; onUpdateAvailable(callback: (info: { version: string }) => void): () => void }
 	  scaffold: {
 	    templates(): Promise<TemplateInfo[]>
 	    create(input: { template: string; projectName: string; targetDir: string; description?: string }): Promise<ScaffoldResult>

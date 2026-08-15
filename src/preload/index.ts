@@ -78,7 +78,8 @@ const api: AppApi = {
 	    onAgent: (callback) => { const listener = (_: unknown, event: AgentEvent) => callback(event); ipcRenderer.on('agent:event', listener); return () => ipcRenderer.removeListener('agent:event', listener) },
 	    onApproval: (callback) => { const listener = (_: unknown, request: ApprovalRequest) => callback(request); ipcRenderer.on('approval:request', listener); return () => ipcRenderer.removeListener('approval:request', listener) },
 	    onBuildAgent: (callback) => { const listener = (_: unknown, event: AgentEvent) => callback(event); ipcRenderer.on('build:event', listener); return () => ipcRenderer.removeListener('build:event', listener) },
-	    onBuildApproval: (callback) => { const listener = (_: unknown, request: ApprovalRequest) => callback(request); ipcRenderer.on('build:approval', listener); return () => ipcRenderer.removeListener('build:approval', listener) }
+	    onBuildApproval: (callback) => { const listener = (_: unknown, request: ApprovalRequest) => callback(request); ipcRenderer.on('build:approval', listener); return () => ipcRenderer.removeListener('build:approval', listener) },
+	    onUpdateAvailable: (callback) => { const listener = (_: unknown, info: { version: string }) => callback(info); ipcRenderer.on('update:available', listener); return () => ipcRenderer.removeListener('update:available', listener) }
 	  },
 	  scaffold: {
 	    templates: () => ipcRenderer.invoke('scaffold:templates'),

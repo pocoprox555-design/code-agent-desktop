@@ -103,12 +103,9 @@ function createWindow(): void {
     try {
       autoUpdater.autoDownload = false // لا نحمل تلقائياً — ننتظر موافقة المستخدم
       autoUpdater.autoInstallOnAppQuit = true
-      autoUpdater.on('update-available', () => {
+      autoUpdater.on('update-available', (info) => {
         if (!window.isDestroyed()) {
-          window.webContents.send('agent:event', {
-            sessionId: '', type: 'status',
-            text: 'يتوفر تحديث جديد! سيُثبَّت عند إغلاق التطبيق.',
-          })
+          window.webContents.send('update:available', { version: info.version })
         }
       })
       autoUpdater.checkForUpdates().catch(() => { /* فشل صامت — يمكن الفحص يدويًا */ })
